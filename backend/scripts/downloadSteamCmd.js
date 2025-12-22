@@ -13,8 +13,14 @@ const steamCmdUrls = {
     'arm64': 'https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz'
   },
   'win32': {
-    'x64': 'https://steamcdn-a.akamaihd.net/client/installer/steamcmd_win32.zip',
-    'ia32': 'https://steamcdn-a.akamaihd.net/client/installer/steamcmd_win32.zip'
+    'x64': [
+      'https://steamcdn-a.akamaihd.net/client/installer/steamcmd.zip',
+      'https://steamcdn-a.akamaihd.net/client/installer/steamcmd_win32.zip'
+    ],
+    'ia32': [
+      'https://steamcdn-a.akamaihd.net/client/installer/steamcmd.zip',
+      'https://steamcdn-a.akamaihd.net/client/installer/steamcmd_win32.zip'
+    ]
   },
   'darwin': {
     'x64': 'https://steamcdn-a.akamaihd.net/client/installer/steamcmd_osx.tar.gz',
@@ -25,13 +31,30 @@ const steamCmdUrls = {
 function downloadFile(url, outputPath) {
   return new Promise((resolve, reject) => {
     const file = createWriteStream(outputPath);
-    https.get(url, (response) => {
-      if (response.statusCode === 302 || response.statusCode === 301) {
+    const options = {
+      headers: {
+        'User-Agent': 'RimworldWorkshopDownloader/1.0'
+      }
+    };
+    
+    https.get(url, options, (response) => {
+      if (response.statusCode === 302 || response.statusCode === 301 || response.statusCode === 307 || response.statusCode === 308) {
         // Follow redirect
-        return downloadFile(response.headers.location, outputPath).then(resolve).catch(reject);
+        const redirectUrl = response.headers.location;
+        if (!redirectUrl) {
+          reject(new Error(`Redirect received but no location header: ${response.statusCode}`));
+          return;
+        }
+        // Handle relative redirects
+        const absoluteUrl = redirectUrl.startsWith('http') 
+          ? redirectUrl 
+          : new URL(redirectUrl, url).toString();
+        return downloadFile(absoluteUrl, outputPath).then(resolve).catch(reject);
       }
       if (response.statusCode !== 200) {
-        reject(new Error(`Failed to download: ${response.statusCode}`));
+        file.close();
+        fs.unlink(outputPath).catch(() => {});
+        reject(new Error(`Failed to download: ${response.statusCode} ${response.statusMessage || ''}`));
         return;
       }
       response.pipe(file);
@@ -40,6 +63,7 @@ function downloadFile(url, outputPath) {
         resolve();
       });
     }).on('error', (err) => {
+      file.close();
       fs.unlink(outputPath).catch(() => {});
       reject(err);
     });
@@ -62,20 +86,43 @@ async function extractZip(zipPath, outputDir) {
 }
 
 async function main() {
-  const url = steamCmdUrls[platform]?.[arch] || steamCmdUrls[platform]?.['x64'];
-  if (!url) {
+  let urlConfig = steamCmdUrls[platform]?.[arch] || steamCmdUrls[platform]?.['x64'];
+  if (!urlConfig) {
     throw new Error(`Unsupported platform: ${platform} ${arch}`);
   }
 
+  // Handle both single URL strings and arrays of URLs (for fallback)
+  const urls = Array.isArray(urlConfig) ? urlConfig : [urlConfig];
+  
   const binDir = path.join(process.cwd(), 'bin', 'steamcmd');
   await fs.mkdir(binDir, { recursive: true });
 
-  const isZip = url.endsWith('.zip');
+  const isZip = urls[0].endsWith('.zip');
   const archiveName = isZip ? 'steamcmd.zip' : 'steamcmd.tar.gz';
   const archivePath = path.join(binDir, archiveName);
 
-  console.log(`Downloading SteamCMD from ${url}...`);
-  await downloadFile(url, archivePath);
+  // Try each URL until one works
+  let downloadSuccess = false;
+  let lastError = null;
+  
+  for (const url of urls) {
+    try {
+      console.log(`Downloading SteamCMD from ${url}...`);
+      await downloadFile(url, archivePath);
+      downloadSuccess = true;
+      break;
+    } catch (error) {
+      console.warn(`Failed to download from ${url}: ${error.message}`);
+      lastError = error;
+      // Clean up failed download
+      await fs.unlink(archivePath).catch(() => {});
+      continue;
+    }
+  }
+
+  if (!downloadSuccess) {
+    throw new Error(`Failed to download SteamCMD from all URLs. Last error: ${lastError?.message || 'Unknown error'}`);
+  }
 
   console.log(`Extracting SteamCMD...`);
   if (isZip) {
