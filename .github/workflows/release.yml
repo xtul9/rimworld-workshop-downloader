@@ -90,9 +90,9 @@ jobs:
           npm run build
           npm run build:bundle
           if [ "${{ matrix.platform }}" == "linux" ]; then
-            pkg dist/bundle.js --targets node18-linux-x64 --output bin/rimworld-workshop-downloader-backend-x86_64-unknown-linux-gnu
+            npx pkg dist/bundle.js --targets node18-linux-x64 --output bin/rimworld-workshop-downloader-backend-x86_64-unknown-linux-gnu
           elif [ "${{ matrix.platform }}" == "macos" ]; then
-            pkg dist/bundle.js --targets node18-macos-x64 --output bin/rimworld-workshop-downloader-backend-x86_64-apple-darwin
+            npx pkg dist/bundle.js --targets node18-macos-x64 --output bin/rimworld-workshop-downloader-backend-x86_64-apple-darwin
           fi
         shell: bash
 
@@ -102,7 +102,7 @@ jobs:
           cd backend
           npm run build
           npm run build:bundle
-          pkg dist/bundle.js --targets node18-win-x64 --output bin/rimworld-workshop-downloader-backend-x86_64-pc-windows-msvc.exe
+          npx pkg dist/bundle.js --targets node18-win-x64 --output bin/rimworld-workshop-downloader-backend-x86_64-pc-windows-msvc.exe
         shell: bash
 
       - name: Install frontend dependencies
