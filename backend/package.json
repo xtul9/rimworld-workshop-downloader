@@ -2,6 +2,7 @@
   "name": "rimworld-workshop-downloader-backend",
   "version": "1.0.0",
   "description": "Backend Node.js dla Rimworld Workshop Downloader",
+  "type": "module",
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",
