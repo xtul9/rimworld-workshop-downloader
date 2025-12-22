@@ -1,0 +1,568 @@
+.mod-list-container {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.mod-list-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  color: #999;
+  font-size: 14px;
+  padding: 40px;
+}
+
+.mod-list-empty-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  text-align: center;
+  max-width: 500px;
+}
+
+.mod-list-empty-icon {
+  font-size: 48px;
+  opacity: 0.6;
+}
+
+.mod-list-empty-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: #666;
+  margin-top: 8px;
+}
+
+.mod-list-empty-message {
+  font-size: 14px;
+  color: #999;
+  line-height: 1.6;
+}
+
+.mod-list-empty-message strong {
+  color: #666;
+  font-weight: 600;
+}
+
+.mod-list-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  gap: 16px;
+  padding: 40px;
+}
+
+.error-icon {
+  font-size: 48px;
+}
+
+.error-text {
+  color: #e74c3c;
+  font-size: 14px;
+  font-weight: 500;
+  text-align: center;
+  max-width: 600px;
+  line-height: 1.5;
+}
+
+.mod-list-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  gap: 20px;
+  padding: 40px;
+}
+
+.loader-spinner {
+  width: 48px;
+  height: 48px;
+  border: 4px solid #e3e3e3;
+  border-top: 4px solid #3498db;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+.loader-text {
+  color: #666;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+.mod-list {
+  flex: 1;
+  overflow: hidden;
+  min-height: 0;
+  padding: 10px;
+}
+
+.mod-item {
+  padding: 12px;
+  margin: 0;
+  background-color: #f8f9fa;
+  border: 2px solid transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s;
+  min-height: 72px;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+}
+
+/* Removed :last-child margin-bottom as react-window handles spacing */
+
+.mod-item:hover {
+  background-color: #e9ecef;
+  border-color: #dee2e6;
+}
+
+.mod-item.selected {
+  background-color: #d1ecf1;
+  border-color: #3498db;
+}
+
+.mod-item.updated {
+  background-color: #d4edda;
+  border-color: #28a745;
+}
+
+.mod-item.updating {
+  background-color: #fff3cd;
+  border-color: #ffc107;
+  cursor: wait;
+  opacity: 0.8;
+}
+
+.mod-item-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.mod-name {
+  font-weight: 600;
+  font-size: 14px;
+  color: #333;
+}
+
+.mod-updated-badge {
+  padding: 2px 8px;
+  background-color: #28a745;
+  color: white;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.mod-item-details {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 8px;
+  font-size: 12px;
+}
+
+.mod-detail {
+  display: flex;
+  gap: 6px;
+}
+
+.mod-detail-label {
+  font-weight: 600;
+  color: #666;
+}
+
+.mod-detail-value {
+  color: #333;
+}
+
+.mod-item-updating {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  gap: 8px;
+  flex: 1;
+  min-height: 0;
+}
+
+.mod-updating-spinner {
+  width: 24px;
+  height: 24px;
+  border: 2px solid #e3e3e3;
+  border-top: 2px solid #ffc107;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  flex-shrink: 0;
+}
+
+.mod-updating-text {
+  color: #856404;
+  font-size: 12px;
+  font-weight: 500;
+  margin: 0;
+}
+
+.mod-updating-name {
+  color: #333;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: center;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin: 0;
+}
+
+.context-menu-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 999;
+}
+
+.context-menu {
+  position: fixed;
+  background-color: white;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  z-index: 1000;
+  min-width: 200px;
+  padding: 4px 0;
+}
+
+.context-menu-item {
+  padding: 8px 16px;
+  font-size: 13px;
+  color: #333;
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+
+.context-menu-item:hover:not(.disabled) {
+  background-color: #f0f0f0;
+}
+
+.context-menu-item.disabled {
+  color: #999;
+  cursor: not-allowed;
+}
+
+.context-menu-separator {
+  height: 1px;
+  background-color: #ddd;
+  margin: 4px 0;
+}
+
+.dark .mod-item {
+    background-color: #252525;
+    border-color: #444;
+  }
+
+.dark .mod-item:hover {
+    background-color: #2d2d2d;
+    border-color: #555;
+  }
+
+.dark .mod-item.selected {
+    background-color: #1e3a4a;
+    border-color: #3498db;
+  }
+
+.dark .mod-item.updated {
+    background-color: #1e3a2a;
+    border-color: #28a745;
+  }
+
+.dark .mod-item.updating {
+    background-color: #3d2f00;
+    border-color: #ffc107;
+  }
+
+.dark .mod-updating-text {
+    color: #ffc107;
+  }
+
+.dark .mod-updating-name {
+    color: #ecf0f1;
+  }
+
+.dark .mod-name {
+    color: #ecf0f1;
+  }
+
+.dark .mod-detail-label {
+    color: #bdc3c7;
+  }
+
+.dark .mod-detail-value {
+    color: #ecf0f1;
+  }
+
+.dark .context-menu {
+    background-color: #2d2d2d;
+    border-color: #444;
+  }
+
+.dark .context-menu-item {
+    color: #ecf0f1;
+  }
+
+.dark .context-menu-item:hover:not(.disabled) {
+    background-color: #353535;
+  }
+
+.dark .context-menu-item.disabled {
+    color: #666;
+  }
+
+.dark .context-menu-separator {
+    background-color: #444;
+  }
+
+.dark .mod-list-loading {
+    color: #bdc3c7;
+  }
+
+.dark .loader-text {
+    color: #bdc3c7;
+  }
+
+.dark .loader-spinner {
+    border-color: #444;
+    border-top-color: #3498db;
+  }
+
+.dark .error-text {
+  color: #e67e22;
+}
+
+.dark .mod-list-empty {
+  color: #bdc3c7;
+}
+
+.dark .mod-list-empty-title {
+  color: #bdc3c7;
+}
+
+.dark .mod-list-empty-message {
+  color: #999;
+}
+
+.dark .mod-list-empty-message strong {
+  color: #bdc3c7;
+}
+
+/* Restore Backup Modal */
+.restore-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.restore-modal {
+  background-color: white;
+  border-radius: 8px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+  width: 90%;
+  max-width: 500px;
+  display: flex;
+  flex-direction: column;
+}
+
+.restore-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 20px;
+  border-bottom: 1px solid #ddd;
+}
+
+.restore-modal-header h3 {
+  margin: 0;
+  font-size: 18px;
+  color: #333;
+}
+
+.restore-modal-content {
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+}
+
+.restore-modal-content p {
+  margin: 0;
+  font-size: 14px;
+  color: #666;
+  line-height: 1.5;
+}
+
+.restore-modal-content strong {
+  color: #333;
+  font-weight: 600;
+}
+
+.restore-backup-date {
+  color: #666 !important;
+  font-size: 13px !important;
+  margin: 8px 0 !important;
+}
+
+.restore-backup-date strong {
+  color: #333;
+  font-weight: 600;
+}
+
+.restore-warning {
+  color: #e67e22 !important;
+  font-size: 13px !important;
+  font-style: italic;
+}
+
+.restore-error {
+  padding: 12px;
+  background-color: #fee;
+  border: 1px solid #fcc;
+  border-radius: 4px;
+  color: #c33;
+}
+
+.restore-error p {
+  margin: 0;
+  color: #c33;
+  font-size: 13px;
+}
+
+.restore-success {
+  padding: 12px;
+  background-color: #efe;
+  border: 1px solid #cfc;
+  border-radius: 4px;
+  color: #3c3;
+}
+
+.restore-success p {
+  margin: 0;
+  color: #3c3;
+  font-size: 13px;
+}
+
+.restore-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 20px;
+  border-top: 1px solid #ddd;
+}
+
+.restore-button {
+  padding: 10px 20px;
+  border: none;
+  border-radius: 4px;
+  background-color: #3498db;
+  color: white;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  transition: background-color 0.2s;
+}
+
+.restore-button:hover:not(:disabled) {
+  background-color: #2980b9;
+}
+
+.restore-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Dark mode styles for restore modal */
+.dark .restore-modal {
+  background-color: #2d2d2d;
+  border-color: #444;
+}
+
+.dark .restore-modal-header {
+  border-bottom-color: #444;
+}
+
+.dark .restore-modal-header h3 {
+  color: #ecf0f1;
+}
+
+.dark .restore-modal-content p {
+  color: #bdc3c7;
+}
+
+.dark .restore-modal-content strong {
+  color: #ecf0f1;
+}
+
+.dark .restore-backup-date {
+  color: #bdc3c7 !important;
+}
+
+.dark .restore-backup-date strong {
+  color: #ecf0f1;
+}
+
+.dark .restore-warning {
+  color: #e67e22 !important;
+}
+
+.dark .restore-error {
+  background-color: #3d1e1e;
+  border-color: #5d2e2e;
+}
+
+.dark .restore-error p {
+    color: #e67e22;
+  }
+
+.dark .restore-success {
+  background-color: #1e3d1e;
+  border-color: #2e5d2e;
+}
+
+.dark .restore-success p {
+  color: #2ecc71;
+}
+
+.dark .restore-modal-actions {
+  border-top-color: #444;
+}
+
+.dark .restore-button {
+  background-color: #3498db;
+}
+
+.dark .restore-button:hover:not(:disabled) {
+  background-color: #2980b9;
+}
+

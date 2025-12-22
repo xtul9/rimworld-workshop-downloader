@@ -1,0 +1,50 @@
+# Node.js / TypeScript
+**/node_modules/
+**/dist/
+*.log
+
+# Node.js / npm
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Tauri
+frontend/src-tauri/target/
+frontend/dist/
+frontend/dist-ssr/
+
+# Build outputs
+*.app
+*.dmg
+*.deb
+*.rpm
+*.msi
+*.exe
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Logs
+logs/
+*.log
+
+/bin
+backend/bin/
+
+backend/steamcmd/
+
+steamcmd/

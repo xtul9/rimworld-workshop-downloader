@@ -1,8 +1,23 @@
-# Rimworld Mod Updater
+# Rimworld Workshop Downloader
 
-Desktop application using Tauri (React) as frontend and Node.js (Express) as backend API.
+Desktop application for managing Rimworld mods from Steam Workshop. Built with Tauri (React) as frontend and Node.js (Express) as backend API.
 
 **Native Wayland support** - the project uses modern solutions and fully supports Wayland on Linux.
+
+## Features
+
+- **Query & Update Mods**: Check for outdated mods in your Rimworld mods folder and update them automatically
+- **Download Mods**: Download mods directly from Steam Workshop by ID or URL
+- **Mod Management**: 
+  - Ignore mods in three ways: temporarily from list, ignore specific update, or permanently ignore
+  - Manage ignored mods list in Settings
+- **Backup System**: 
+  - Automatic backups before updating mods (configurable)
+  - Restore mods from backups
+  - Dedicated backup directory support
+- **Dark/Light Mode**: System theme support with manual override
+- **Virtualized Mod List**: Efficient rendering of large mod lists
+- **Smart Selection**: Shift-click range selection and improved single-click behavior
 
 ## Project Structure
 
@@ -11,12 +26,39 @@ rimworld-mod-updater-multiplatform/
 ├── backend/                         # Node.js backend (Express + TypeScript)
 │   ├── src/
 │   │   ├── index.ts                # Main server file
-│   │   └── routes/
-│   │       └── mod.ts              # API routes
+│   │   ├── routes/
+│   │   │   ├── mod.ts              # Mod management API routes
+│   │   │   └── workshop.ts         # Steam Workshop API routes
+│   │   └── services/
+│   │       ├── modQuery.ts         # Query mods for updates
+│   │       ├── modUpdater.ts       # Update mods logic
+│   │       ├── downloader.ts       # Download mods via SteamCMD
+│   │       ├── cache.ts            # API response caching
+│   │       └── rateLimiter.ts      # Rate limiting for API calls
 │   └── package.json
 └── frontend/                        # Tauri + React frontend
-    ├── src/                         # React source code
+    ├── src/
+    │   ├── components/             # React components
+    │   │   ├── QueryTab.tsx        # Query & Update tab
+    │   │   ├── DownloadTab.tsx    # Download mods tab
+    │   │   ├── SettingsTab.tsx     # Settings tab
+    │   │   ├── ModList.tsx         # Virtualized mod list
+    │   │   ├── ContextMenu.tsx     # Global context menu
+    │   │   └── RestoreBackupModal.tsx # Backup restore modal
+    │   ├── contexts/               # React contexts
+    │   │   ├── SettingsContext.tsx # Application settings
+    │   │   ├── ModsContext.tsx     # Mods state management
+    │   │   ├── ModsPathContext.tsx # Mods path management
+    │   │   ├── ModalContext.tsx    # Global modal management
+    │   │   └── ContextMenuContext.tsx # Global context menu
+    │   └── utils/                  # Utilities
+    │       ├── settingsStorage.ts   # Settings persistence
+    │       └── api.ts              # API client
     └── src-tauri/                   # Rust (Tauri) source code
+        ├── src/
+        │   ├── main.rs              # Tauri entry point
+        │   └── lib.rs               # Tauri library
+        └── tauri.conf.json          # Tauri configuration
 ```
 
 ## Requirements
@@ -167,10 +209,11 @@ The built application will be in `frontend/src-tauri/target/release/bundle/`:
 - **macOS**: `.dmg` or `.app`
 
 **Important Notes**:
-- The backend Node.js files are bundled with the application as resources
-- **Node.js runtime must be installed** on the target system (the application uses the system's Node.js)
+- The backend Node.js application is compiled to a native executable using `pkg` and bundled as a sidecar
+- **Node.js runtime is NOT required** on the target system - it's embedded in the application
+- **SteamCMD is automatically downloaded and bundled** during the build process - users don't need to install it
 - The application will automatically start the bundled backend when launched
-- For a truly standalone executable (without requiring Node.js), you would need to bundle Node.js runtime or use a different approach (e.g., pkg, nexe, or compile Node.js backend to native code)
+- The sidecar binary contains the entire Node.js runtime and all dependencies
 
 ## Architecture
 
@@ -182,22 +225,47 @@ The built application will be in `frontend/src-tauri/target/release/bundle/`:
 
 ### API Endpoints
 
-- `GET /api/mod/greet?name={name}` - Example greeting endpoint
+#### Mod Management (`/api/mod`)
+- `GET /api/mod/query?modsPath={path}&ignoredMods={ids}` - Query mods folder for outdated mods
+- `POST /api/mod/update` - Update selected mods (with optional backup)
+- `GET /api/mod/check-backup?modPath={path}&backupDirectory={dir}` - Check if backup exists for a mod
+- `POST /api/mod/restore-backup` - Restore mod from backup
+- `POST /api/mod/ignore-update` - Ignore specific update (creates .lastupdated file)
 - `GET /api/mod/status` - Backend status
+- `GET /api/mod/greet?name={name}` - Example greeting endpoint
+
+#### Steam Workshop (`/api/workshop`)
+- `GET /api/workshop/file-details?id={modId}` - Get mod details from Steam Workshop
+- `GET /api/workshop/is-collection?id={modId}` - Check if file is a collection
+- `GET /api/workshop/collection-details?id={collectionId}` - Get collection details
+- `POST /api/workshop/download` - Download mod(s) from Steam Workshop
+
+#### Health Check
 - `GET /api/health` - Health check endpoint
 
 ## Development
 
 ### Adding New API Endpoints
 
-1. Add new routes in `backend/src/routes/`
+1. Add new routes in `backend/src/routes/` (create new router or extend existing)
 2. Import and use the router in `backend/src/index.ts`
 3. The endpoint will be automatically available at `/api/{route}/{endpoint}`
 
 ### Adding New React Features
 
-1. Edit components in `frontend/src/`
-2. Use `fetch()` to communicate with the Node.js backend at `http://localhost:5000`
+1. Edit components in `frontend/src/components/`
+2. Use React contexts in `frontend/src/contexts/` for global state management
+3. Use `fetch()` to communicate with the Node.js backend at `http://localhost:5000`
+4. For Tauri-specific features, use `@tauri-apps/api` or Tauri plugins
+
+### Key Technologies
+
+- **Frontend**: React 19, TypeScript, Tauri 2
+- **Backend**: Node.js, Express, TypeScript
+- **Steam Integration**: SteamCMD for downloading mods
+- **State Management**: React Context API
+- **UI**: Custom CSS with dark/light mode support
+- **List Virtualization**: react-window for performance
 
 ## Troubleshooting
 
@@ -225,10 +293,14 @@ Run the backend manually in a separate terminal: `cd backend && npm run dev`
 
 ## Notes
 
-- The Node.js backend must be running on port 5000
+- The Node.js backend must be running on port 5000 (starts automatically)
 - CORS is configured to allow all origins (this should be changed in production)
 - The backend automatically starts when the Tauri application launches
-- The backend uses TypeScript and is compiled to JavaScript before running
+- The backend uses TypeScript and is compiled to JavaScript, then bundled into a native executable using `pkg`
+- **Node.js is embedded in the application** - users don't need to install it separately
+- **SteamCMD is embedded in the application** - automatically downloaded during build and bundled with the app
+- Settings are persisted using Tauri's plugin-store
+- First run experience: Settings tab opens by default on first launch
 
 ## License
 

@@ -1,0 +1,126 @@
+.theme-select-container {
+  position: relative;
+  width: 100%;
+}
+
+.theme-select-button {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 13px;
+  font-family: inherit;
+  background-color: white;
+  color: #333;
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  text-align: left;
+  transition: border-color 0.2s;
+}
+
+.theme-select-button:hover {
+  border-color: #bbb;
+}
+
+.theme-select-button:focus {
+  outline: none;
+  border-color: #3498db;
+}
+
+.theme-select-arrow {
+  font-size: 10px;
+  transition: transform 0.2s;
+  color: #666;
+  margin-left: 8px;
+}
+
+.theme-select-arrow.open {
+  transform: rotate(180deg);
+}
+
+.theme-select-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  margin-top: 4px;
+  background-color: white;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  z-index: 1000;
+  overflow: hidden;
+}
+
+.theme-select-option {
+  width: 100%;
+  padding: 10px 12px;
+  border: none;
+  background-color: transparent;
+  color: #333;
+  font-size: 13px;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.theme-select-option:hover {
+  background-color: #f5f5f5;
+}
+
+.theme-select-option.selected {
+  background-color: #e3f2fd;
+  color: #1976d2;
+  font-weight: 500;
+}
+
+.theme-select-option:focus {
+  outline: none;
+  background-color: #f5f5f5;
+}
+
+/* Dark mode styles */
+.dark .theme-select-button {
+  background-color: #1e1e1e;
+  border-color: #444;
+  color: #ecf0f1;
+}
+
+.dark .theme-select-button:hover {
+  border-color: #555;
+}
+
+.dark .theme-select-button:focus {
+  border-color: #3498db;
+}
+
+.dark .theme-select-arrow {
+  color: #bdc3c7;
+}
+
+.dark .theme-select-dropdown {
+  background-color: #1e1e1e;
+  border-color: #444;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+}
+
+.dark .theme-select-option {
+  color: #ecf0f1;
+}
+
+.dark .theme-select-option:hover {
+  background-color: #2d2d2d;
+}
+
+.dark .theme-select-option.selected {
+  background-color: #1e3a4a;
+  color: #3498db;
+}
+
+.dark .theme-select-option:focus {
+  background-color: #2d2d2d;
+}
+
