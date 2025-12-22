@@ -267,6 +267,58 @@ The built application will be in `frontend/src-tauri/target/release/bundle/`:
 - **UI**: Custom CSS with dark/light mode support
 - **List Virtualization**: react-window for performance
 
+## CI/CD and Releases
+
+### Automated Builds
+
+The project includes GitHub Actions workflows that automatically build the application for all platforms (Linux, Windows, macOS) when:
+
+- Code is pushed to the `master` branch
+- A tag starting with `v` is created (e.g., `v0.1.0`)
+- The workflow is manually triggered from the Actions tab
+
+### Creating a Release
+
+To create a new release:
+
+1. **Update the version** in the following files:
+   - `frontend/src-tauri/tauri.conf.json`
+   - `frontend/src-tauri/Cargo.toml`
+   - `frontend/package.json`
+
+   Or use the provided script:
+   ```bash
+   ./bump-version.sh 0.1.0
+   ```
+
+2. **Commit and push** the changes:
+   ```bash
+   git add .
+   git commit -m "Bump version to 0.1.0"
+   git push origin master
+   ```
+
+3. **Create and push a tag**:
+   ```bash
+   git tag v0.1.0
+   git push origin v0.1.0
+   ```
+
+4. **GitHub Actions will automatically**:
+   - Build the application for Linux, Windows, and macOS
+   - Create a GitHub Release with all binaries attached
+   - The release will be available at: `https://github.com/YOUR_USERNAME/rimworld-mod-updater-multiplatform/releases`
+
+### Build Artifacts
+
+The workflow produces the following packages:
+
+- **Linux**: `.deb` (Debian/Ubuntu) and `.rpm` (Fedora/RHEL) packages
+- **Windows**: `.msi` installer
+- **macOS**: `.dmg` disk image
+
+All artifacts are automatically attached to the GitHub Release.
+
 ## Troubleshooting
 
 ### Rust Compilation Error: Missing glib-2.0

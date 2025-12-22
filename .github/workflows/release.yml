@@ -1,0 +1,183 @@
+name: Build and Release
+
+on:
+  push:
+    branches:
+      - master
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: 'linux'
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            bundle-targets: '["deb","rpm"]'
+          - platform: 'windows'
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bundle-targets: '["msi"]'
+          - platform: 'macos'
+            os: macos-latest
+            target: x86_64-apple-darwin
+            bundle-targets: '["dmg"]'
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install system dependencies (Linux)
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            pkg-config
+
+      - name: Install system dependencies (macOS)
+        if: matrix.platform == 'macos'
+        run: |
+          brew install openssl
+
+      - name: Install backend dependencies
+        run: |
+          cd backend
+          npm ci
+
+      - name: Build backend TypeScript
+        run: |
+          cd backend
+          npm run build
+
+      - name: Download SteamCMD
+        run: |
+          cd backend
+          npm run build:steamcmd
+
+      - name: Build backend sidecar binary for current platform (Linux/macOS)
+        if: matrix.platform != 'windows'
+        run: |
+          cd backend
+          npm run build
+          npm run build:bundle
+          if [ "${{ matrix.platform }}" == "linux" ]; then
+            pkg dist/bundle.js --targets node18-linux-x64 --output bin/rimworld-workshop-downloader-backend-x86_64-unknown-linux-gnu
+          elif [ "${{ matrix.platform }}" == "macos" ]; then
+            pkg dist/bundle.js --targets node18-macos-x64 --output bin/rimworld-workshop-downloader-backend-x86_64-apple-darwin
+          fi
+        shell: bash
+
+      - name: Build backend sidecar binary for current platform (Windows)
+        if: matrix.platform == 'windows'
+        run: |
+          cd backend
+          npm run build
+          npm run build:bundle
+          pkg dist/bundle.js --targets node18-win-x64 --output bin/rimworld-workshop-downloader-backend-x86_64-pc-windows-msvc.exe
+        shell: bash
+
+      - name: Install frontend dependencies
+        run: |
+          cd frontend
+          npm ci
+
+      - name: Build frontend
+        run: |
+          cd frontend
+          npm run build
+
+      - name: Build Tauri application
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: frontend
+          args: ${{ matrix.bundle-targets }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.platform }}-artifacts
+          path: |
+            frontend/src-tauri/target/release/bundle/**
+          retention-days: 7
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Extract version from tag
+        id: get_version
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            artifacts/linux-artifacts/**/*
+            artifacts/windows-artifacts/**/*
+            artifacts/macos-artifacts/**/*
+          name: Rimworld Workshop Downloader v${{ steps.get_version.outputs.version }}
+          body: |
+            ## Rimworld Workshop Downloader v${{ steps.get_version.outputs.version }}
+            
+            ### Downloads
+            - **Linux**: `.deb` and `.rpm` packages
+            - **Windows**: `.msi` installer
+            - **macOS**: `.dmg` disk image
+            
+            ### Installation
+            - **Linux**: Install using your package manager (`sudo dpkg -i *.deb` or `sudo rpm -i *.rpm`)
+            - **Windows**: Run the `.msi` installer
+            - **macOS**: Mount the `.dmg` and drag the app to Applications
+            
+            ### Changes
+            See the commit history for detailed changelog.
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
