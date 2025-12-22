@@ -356,4 +356,43 @@ Run the backend manually in a separate terminal: `cd backend && npm run dev`
 
 ## License
 
-[License placeholder]
+This project is licensed under the MIT License.
+
+### Embedded Components
+
+This application includes the following third-party components:
+
+#### Node.js Runtime
+
+The application bundles **Node.js 18** runtime, which is compiled into the backend executable using `pkg`.
+
+- **License**: MIT License
+- **Copyright**: Node.js contributors
+- **Source**: https://nodejs.org/
+- **License Compatibility**: MIT + MIT = fully compatible, no conflicts
+
+Node.js is embedded for user convenience - users do not need to install Node.js separately. The Node.js copyright notice is preserved in the bundled executable.
+
+#### SteamCMD
+
+The application bundles **SteamCMD** command-line tool for downloading Steam Workshop content.
+
+- **License**: Steam Subscriber Agreement (proprietary, owned by Valve Corporation)
+- **Source**: https://developer.valvesoftware.com/wiki/SteamCMD
+- **Important Notes**:
+  - SteamCMD is **not open-source**
+  - SteamCMD is licensed separately by Valve Corporation
+  - The SteamCMD binary is **not modified** in any way
+  - Users must accept Valve's Steam Subscriber Agreement when using SteamCMD
+  - This application does **not** sublicense SteamCMD under MIT
+  - SteamCMD is included for user convenience - users do not need to install it separately
+
+**Legal Notice**: This software bundles SteamCMD, which is licensed separately by Valve Corporation under the Steam Subscriber Agreement. By using this application, you acknowledge that SteamCMD is subject to Valve's terms and conditions, not this project's MIT license.
+
+### License Summary
+
+- **This Project**: MIT License
+- **Node.js Runtime**: MIT License (compatible)
+- **SteamCMD**: Steam Subscriber Agreement (separate license, owned by Valve)
+
+For the full license text, see the [LICENSE](LICENSE) file in the repository root.
