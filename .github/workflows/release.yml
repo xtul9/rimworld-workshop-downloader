@@ -17,15 +17,15 @@ jobs:
           - platform: 'linux'
             os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-            bundle-targets: '["deb","rpm"]'
+            bundle-targets: 'deb,rpm'
           - platform: 'windows'
             os: windows-latest
             target: x86_64-pc-windows-msvc
-            bundle-targets: '["msi"]'
+            bundle-targets: 'msi'
           - platform: 'macos'
             os: macos-latest
             target: x86_64-apple-darwin
-            bundle-targets: '["dmg"]'
+            bundle-targets: 'dmg'
 
     runs-on: ${{ matrix.os }}
 
@@ -36,7 +36,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
+          node-version: '22'
           cache: 'npm'
           cache-dependency-path: |
             backend/package-lock.json
@@ -121,7 +121,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: frontend
-          args: ${{ matrix.bundle-targets }}
+          args: --bundles ${{ matrix.bundle-targets }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
