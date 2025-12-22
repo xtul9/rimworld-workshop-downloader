@@ -24,7 +24,7 @@ jobs:
             bundle-targets: 'msi'
           - platform: 'macos'
             os: macos-latest
-            target: x86_64-apple-darwin
+            target: aarch64-apple-darwin
             bundle-targets: 'dmg'
 
     runs-on: ${{ matrix.os }}
@@ -92,7 +92,8 @@ jobs:
           if [ "${{ matrix.platform }}" == "linux" ]; then
             npx pkg dist/bundle.js --targets node22-linux-x64 --output bin/rimworld-workshop-downloader-backend-x86_64-unknown-linux-gnu
           elif [ "${{ matrix.platform }}" == "macos" ]; then
-            npx pkg dist/bundle.js --targets node22-macos-x64 --output bin/rimworld-workshop-downloader-backend-x86_64-apple-darwin
+            # Build for Apple Silicon (ARM64) - macos-latest runners are ARM64
+            npx pkg dist/bundle.js --targets node22-macos-arm64 --output bin/rimworld-workshop-downloader-backend-aarch64-apple-darwin
           fi
         shell: bash
 
