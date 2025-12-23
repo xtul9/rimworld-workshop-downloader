@@ -48,12 +48,13 @@ impl ModUpdater {
         existing_folder_name: Option<&str>,
         create_backup: bool,
         backup_directory: Option<&Path>,
-    ) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    ) -> Result<PathBuf, String> {
         // Use existing folder name if provided, otherwise find existing folder with same mod ID, otherwise use mod title
         let folder_name = if let Some(name) = existing_folder_name {
             name.to_string()
         } else {
-            match self.find_existing_mod_folder(mods_path, mod_id).await? {
+            match self.find_existing_mod_folder(mods_path, mod_id).await
+                .map_err(|e| format!("Failed to find existing mod folder: {}", e))? {
                 Some(existing_folder) => {
                     existing_folder.file_name()
                         .and_then(|n| n.to_str())
@@ -70,22 +71,26 @@ impl ModUpdater {
         let mod_destination_path = mods_path.join(&folder_name);
 
         // Ensure mods folder exists
-        fs::create_dir_all(mods_path)?;
+        fs::create_dir_all(mods_path)
+            .map_err(|e| format!("Failed to create mods directory: {}", e))?;
 
         // Create backup if requested
         if create_backup {
             if let Some(backup_dir) = backup_directory {
-                fs::create_dir_all(backup_dir)?;
+                fs::create_dir_all(backup_dir)
+                    .map_err(|e| format!("Failed to create backup directory: {}", e))?;
                 let backup_path = backup_dir.join(&folder_name);
                 
                 // Remove old backup if exists
                 if backup_path.exists() {
-                    fs::remove_dir_all(&backup_path)?;
+                    fs::remove_dir_all(&backup_path)
+                        .map_err(|e| format!("Failed to remove old backup: {}", e))?;
                 }
                 
                 // Copy current mod to backup directory
                 if mod_destination_path.exists() {
-                    copy_dir_all(&mod_destination_path, &backup_path)?;
+                    copy_dir_all(&mod_destination_path, &backup_path)
+                        .map_err(|e| format!("Failed to create backup: {}", e))?;
                     eprintln!("[ModUpdater] Created backup for mod {} at {:?}", mod_id, backup_path);
                 }
             }
@@ -93,7 +98,8 @@ impl ModUpdater {
 
         // Remove existing mod folder if it exists
         if mod_destination_path.exists() {
-            fs::remove_dir_all(&mod_destination_path)?;
+            fs::remove_dir_all(&mod_destination_path)
+                .map_err(|e| format!("Failed to remove existing mod folder: {}", e))?;
         }
 
         // Copy mod from download folder to game mods folder
@@ -104,10 +110,11 @@ impl ModUpdater {
         };
         
         if !source_path.exists() || !source_path.is_dir() {
-            return Err(format!("Source mod folder not found: {:?}", source_path).into());
+            return Err(format!("Source mod folder not found: {:?}", source_path));
         }
 
-        copy_dir_all(&source_path, &mod_destination_path)?;
+        copy_dir_all(&source_path, &mod_destination_path)
+            .map_err(|e| format!("Failed to copy mod: {}", e))?;
 
         eprintln!("Mod {} copied to {:?}", mod_id, mod_destination_path);
 
@@ -115,15 +122,16 @@ impl ModUpdater {
     }
 
     /// Find existing mod folder with the given mod ID
-    async fn find_existing_mod_folder(&self, mods_path: &Path, mod_id: &str) -> Result<Option<PathBuf>, Box<dyn std::error::Error>> {
-        let entries = fs::read_dir(mods_path)?;
+    async fn find_existing_mod_folder(&self, mods_path: &Path, mod_id: &str) -> Result<Option<PathBuf>, String> {
+        let entries = fs::read_dir(mods_path)
+            .map_err(|e| format!("Failed to read mods directory: {}", e))?;
         
         for entry in entries {
-            let entry = entry?;
+            let entry = entry.map_err(|e| format!("Failed to read directory entry: {}", e))?;
             let path = entry.path();
             
             if path.is_dir() {
-                if let Some(found_mod_id) = query_mod_id(&path)? {
+                if let Ok(Some(found_mod_id)) = query_mod_id(&path) {
                     if found_mod_id == mod_id {
                         return Ok(Some(path));
                     }
@@ -136,11 +144,13 @@ impl ModUpdater {
 }
 
 /// Recursively copy directory
-fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    fs::create_dir_all(dst)?;
+fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), String> {
+    fs::create_dir_all(dst)
+        .map_err(|e| format!("Failed to create directory {}: {}", dst.display(), e))?;
     
-    for entry in fs::read_dir(src)? {
-        let entry = entry?;
+    for entry in fs::read_dir(src)
+        .map_err(|e| format!("Failed to read directory {}: {}", src.display(), e))? {
+        let entry = entry.map_err(|e| format!("Failed to read directory entry: {}", e))?;
         let path = entry.path();
         let file_name = entry.file_name();
         let dst_path = dst.join(&file_name);
@@ -148,7 +158,8 @@ fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), Box<dyn std::error::Error>
         if path.is_dir() {
             copy_dir_all(&path, &dst_path)?;
         } else {
-            fs::copy(&path, &dst_path)?;
+            fs::copy(&path, &dst_path)
+                .map_err(|e| format!("Failed to copy {} to {}: {}", path.display(), dst_path.display(), e))?;
         }
     }
     

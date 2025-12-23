@@ -2,7 +2,8 @@ use std::process::{Command, Child};
 use std::sync::Mutex;
 use tauri::Manager;
 
-mod backend;
+pub mod backend;
+pub mod commands;
 
 static NODE_PROCESS: Mutex<Option<Child>> = Mutex::new(None);
 
@@ -254,7 +255,19 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_devtools::init())
-        .invoke_handler(tauri::generate_handler![greet, open_devtools])
+        .invoke_handler(tauri::generate_handler![
+            greet,
+            open_devtools,
+            commands::query_mods,
+            commands::update_mods,
+            commands::check_backup,
+            commands::restore_backup,
+            commands::ignore_update,
+            commands::get_file_details,
+            commands::is_collection,
+            commands::get_collection_details,
+            commands::download_mod,
+        ])
         .setup(|app| {
             // Check if backend is already running (e.g., started by run-dev.sh)
             // Only start backend if not already running

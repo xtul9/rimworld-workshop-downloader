@@ -1,8 +1,8 @@
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::path::PathBuf;
 use std::fs;
 use std::time::Duration;
 use tokio::time::sleep;
+use tokio::process::Command;
 
 pub struct Downloader {
     steamcmd_path: PathBuf,
@@ -23,7 +23,7 @@ impl Downloader {
     }
 
     /// Find SteamCMD executable from application resources or PATH
-    pub async fn find_steamcmd_executable(&self) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    pub async fn find_steamcmd_executable(&self) -> Result<PathBuf, String> {
         // Try to find in application resources first
         if let Some(resource_path) = self.find_steamcmd_from_resources().await? {
             return Ok(resource_path);
@@ -42,9 +42,11 @@ impl Downloader {
         }
 
         // Try PATH
-        if let Ok(output) = Command::new(if cfg!(target_os = "windows") { "where" } else { "which" })
+        let which_cmd = if cfg!(target_os = "windows") { "where" } else { "which" };
+        if let Ok(output) = Command::new(which_cmd)
             .arg(steamcmd_exe)
             .output()
+            .await
         {
             if output.status.success() {
                 let path_str = String::from_utf8_lossy(&output.stdout);
@@ -55,11 +57,11 @@ impl Downloader {
             }
         }
 
-        Err(format!("SteamCMD not found in resources, at {:?}, or in PATH", local_path).into())
+        Err(format!("SteamCMD not found in resources, at {:?}, or in PATH", local_path))
     }
 
     /// Find SteamCMD from application resources (bundled with app)
-    async fn find_steamcmd_from_resources(&self) -> Result<Option<PathBuf>, Box<dyn std::error::Error>> {
+    async fn find_steamcmd_from_resources(&self) -> Result<Option<PathBuf>, String> {
         let is_windows = cfg!(target_os = "windows");
         let steamcmd_exe = if is_windows { "steamcmd.exe" } else { "steamcmd" };
         
@@ -83,8 +85,9 @@ impl Downloader {
         };
         
         // Possible paths where SteamCMD might be located
-        let exe_path = std::env::current_exe()?;
-        let exe_dir = exe_path.parent().ok_or("Cannot get executable directory")?;
+        let exe_path = std::env::current_exe()
+            .map_err(|e| format!("Failed to get current executable path: {}", e))?;
+        let exe_dir = exe_path.parent().ok_or_else(|| "Cannot get executable directory".to_string())?;
         
         let possible_paths = vec![
             exe_dir.join(&steamcmd_name_with_suffix),
@@ -105,7 +108,7 @@ impl Downloader {
     }
 
     /// Download mods using SteamCMD
-    pub async fn download_mods(&mut self, mod_ids: &[String]) -> Result<Vec<DownloadedMod>, Box<dyn std::error::Error>> {
+    pub async fn download_mods(&mut self, mod_ids: &[String]) -> Result<Vec<DownloadedMod>, String> {
         // Delete appworkshop file if it exists
         let appworkshop_path = self.steamcmd_path
             .join("steamapps")
@@ -114,7 +117,8 @@ impl Downloader {
         let _ = fs::remove_file(&appworkshop_path);
 
         // Ensure download directory exists
-        fs::create_dir_all(&self.download_path)?;
+        fs::create_dir_all(&self.download_path)
+            .map_err(|e| format!("Failed to create download directory: {}", e))?;
 
         eprintln!("Downloading {} workshop mods with SteamCMD", mod_ids.len());
 
@@ -132,33 +136,37 @@ impl Downloader {
 
         let script_content = script_lines.join("\n") + "\n";
         let script_path = self.steamcmd_path.join("run.txt");
-        fs::write(&script_path, script_content)?;
+        fs::write(&script_path, script_content)
+            .map_err(|e| format!("Failed to write SteamCMD script: {}", e))?;
 
         // Find SteamCMD executable
         let steamcmd_executable = self.find_steamcmd_executable().await?;
 
         // Start watching folders before starting download
+        let download_path = self.download_path.clone();
         let mut download_promises = Vec::new();
         for mod_id in mod_ids {
-            let mod_download_path = self.download_path.join(mod_id.clone());
+            let mod_download_path = download_path.join(mod_id.clone());
             let mod_id_clone = mod_id.clone();
-            download_promises.push(self.wait_for_mod_download(mod_download_path, mod_id_clone));
+            download_promises.push(Self::wait_for_mod_download_static(mod_download_path, mod_id_clone));
         }
 
         // Start SteamCMD process
-        let mut steamcmd_process = Command::new(&steamcmd_executable)
+        let steamcmd_process = Command::new(&steamcmd_executable)
             .arg("+runscript")
             .arg(&script_path)
             .current_dir(&self.steamcmd_path)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("Failed to spawn SteamCMD: {}", e))?;
 
         // Wait for SteamCMD to start and login
         sleep(Duration::from_secs(3)).await;
 
         // Wait for SteamCMD to exit
-        let output = steamcmd_process.wait_with_output()?;
+        let output = steamcmd_process.wait_with_output().await
+            .map_err(|e| format!("Failed to wait for SteamCMD: {}", e))?;
         
         if !output.status.success() {
             eprintln!("[Downloader] SteamCMD exited with code {:?}", output.status.code());
@@ -182,12 +190,11 @@ impl Downloader {
         Ok(downloaded_mods)
     }
 
-    /// Wait for a mod to be downloaded by watching the download folder
-    async fn wait_for_mod_download(
-        &self,
+    /// Wait for a mod to be downloaded by watching the download folder (static version for Send)
+    async fn wait_for_mod_download_static(
         mod_download_path: PathBuf,
         mod_id: String,
-    ) -> Result<Option<DownloadedMod>, Box<dyn std::error::Error>> {
+    ) -> Result<Option<DownloadedMod>, String> {
         let timeout = Duration::from_secs(300); // 5 minutes timeout
         let start_time = std::time::Instant::now();
         let check_interval = Duration::from_secs(1);

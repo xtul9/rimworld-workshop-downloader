@@ -354,7 +354,7 @@ pub async fn query_mods_for_updates(
 
     // Check which mods have updates available
     let mut mods_with_updates_map = std::collections::HashMap::new();
-    let mut update_count = 0;
+    let _update_count = 0;
 
     for mod_ref in &mods {
         let details = match &mod_ref.details {
