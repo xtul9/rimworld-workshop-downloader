@@ -1,9 +1,10 @@
-name: Release
+name: CI
 
 on:
+  pull_request:
   push:
-    tags:
-      - 'v*'
+    branches:
+      - master
 
 jobs:
   build:
@@ -129,61 +130,4 @@ jobs:
             frontend/src-tauri/target/release/bundle/**
           retention-days: 7
           if-no-files-found: error
-
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # Fetch all history for tags
-
-      - name: Extract version from tag
-        id: get_version
-        run: |
-          # Get the tag name from GITHUB_REF (format: refs/tags/v0.2.7)
-          TAG=${GITHUB_REF#refs/tags/}
-          VERSION=${TAG#v}  # Remove 'v' prefix if present
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Tag: $TAG"
-          echo "Version: $VERSION"
-
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: ${{ steps.get_version.outputs.tag }}
-          files: |
-            artifacts/linux-artifacts/**/*
-            artifacts/windows-artifacts/**/*
-            artifacts/macos-artifacts/**/*
-          name: Rimworld Workshop Downloader v${{ steps.get_version.outputs.version }}
-          body: |
-            ## Rimworld Workshop Downloader v${{ steps.get_version.outputs.version }}
-            
-            ### Downloads
-            - **Linux**: `.deb` and `.rpm` packages
-            - **Windows**: `.msi` installer
-            - **macOS**: `.dmg` disk image
-            
-            ### Installation
-            - **Linux**: Install using your package manager (`sudo dpkg -i *.deb` or `sudo rpm -i *.rpm`)
-            - **Windows**: Run the `.msi` installer
-            - **macOS**: Mount the `.dmg` and drag the app to Applications
-            
-            ### Changes
-            See the commit history for detailed changelog.
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
