@@ -158,14 +158,24 @@ jobs:
         with:
           path: artifacts
 
+      - name: Prepare release files
+        run: |
+          mkdir -p release-files
+          
+          # Copy only the final package files
+          find artifacts/linux-artifacts -name "*.deb" -exec cp {} release-files/ \;
+          find artifacts/linux-artifacts -name "*.rpm" -exec cp {} release-files/ \;
+          find artifacts/windows-artifacts -name "*.msi" -exec cp {} release-files/ \;
+          find artifacts/macos-artifacts -name "*.dmg" -exec cp {} release-files/ \;
+          
+          echo "Release files prepared:"
+          ls -lh release-files/
+
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ steps.get_version.outputs.tag }}
-          files: |
-            artifacts/linux-artifacts/**/*
-            artifacts/windows-artifacts/**/*
-            artifacts/macos-artifacts/**/*
+          files: release-files/*
           name: Rimworld Workshop Downloader v${{ steps.get_version.outputs.version }}
           body: |
             ## Rimworld Workshop Downloader v${{ steps.get_version.outputs.version }}
