@@ -1,9 +1,9 @@
 import { useState, useCallback } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { BaseMod } from "../types";
 import { useModal } from "../contexts/ModalContext";
 import { useSettings } from "../contexts/SettingsContext";
 import { useFormatting } from "../hooks/useFormatting";
-import { API_BASE_URL } from "../utils/api";
 import "./ModList.css";
 
 interface RestoreBackupModalProps {
@@ -32,37 +32,29 @@ export default function RestoreBackupModal({ mod, backupDate, onRestoreComplete,
     setRestoreSuccess(null);
 
     try {
-      const response = await fetch(`${API_BASE_URL}/mod/restore-backup`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          modPath: mod.modPath,
-          backupDirectory: settings.backupDirectory
-        })
+      // Call Tauri command to restore backup
+      await invoke("restore_backup", {
+        modPath: mod.modPath,
+        backupDirectory: settings.backupDirectory
       });
       
-      if (response.ok) {
-        await response.json(); // Response is OK, backup restored
-        setRestoreSuccess(`Backup restored successfully for "${mod.details?.title || mod.modId}"`);
-        
-        // Call onRestoreComplete callback if provided
-        if (onRestoreComplete) {
-          setTimeout(() => {
-            onRestoreComplete();
-          }, 500);
-        }
-        
-        // Close modal after showing success message
+      setRestoreSuccess(`Backup restored successfully for "${mod.details?.title || mod.modId}"`);
+      
+      // Call onRestoreComplete callback if provided
+      if (onRestoreComplete) {
         setTimeout(() => {
-          closeModal();
-          setRestoreSuccess(null);
-        }, 2000);
-      } else {
-        const errorData = await response.json().catch(() => ({ error: response.statusText }));
-        setRestoreError(errorData.error || errorData.message || response.statusText);
+          onRestoreComplete();
+        }, 500);
       }
+      
+      // Close modal after showing success message
+      setTimeout(() => {
+        closeModal();
+        setRestoreSuccess(null);
+      }, 2000);
     } catch (error) {
-      setRestoreError(error instanceof Error ? error.message : String(error));
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      setRestoreError(errorMessage);
     } finally {
       setIsRestoring(false);
     }

@@ -3,7 +3,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { BaseMod } from "../types";
 import { useModsPath } from "../contexts/ModsPathContext";
 import { useFormatting } from "../hooks/useFormatting";
-import { API_BASE_URL } from "../utils/api";
+import { invoke } from "@tauri-apps/api/core";
 import "./DownloadTab.css";
 
 interface ModInput {
@@ -116,18 +116,21 @@ export default function DownloadTab() {
       }
 
       try {
-        // Fetch mod details
-        const detailsResponse = await fetch(`${API_BASE_URL}/workshop/file-details?id=${modId}`);
-        const details = await detailsResponse.json();
+        // Call Tauri command to get mod details
+        const details = await invoke<any>("get_file_details", {
+          modId: modId
+        });
 
         if (details.result === 1) {
           // Check if it's a collection
-          const isCollectionResponse = await fetch(`${API_BASE_URL}/workshop/is-collection?id=${modId}`);
-          const isCollection = await isCollectionResponse.json();
+          const isCollection = await invoke<{ isCollection: boolean }>("is_collection", {
+            modId: modId
+          });
 
           if (isCollection.isCollection) {
-            const filesResponse = await fetch(`${API_BASE_URL}/workshop/collection-details?id=${modId}`);
-            const files = await filesResponse.json();
+            const files = await invoke<any[]>("get_collection_details", {
+              modId: modId
+            });
 
             setModInputs(prev => {
               const updated = prev.map(input => 
@@ -248,8 +251,9 @@ export default function DownloadTab() {
             }
           } else if (mod.modId) {
             // Download single mod
-            const detailsResponse = await fetch(`${API_BASE_URL}/workshop/file-details?id=${mod.modId}`);
-            const details = await detailsResponse.json();
+            const details = await invoke<any>("get_file_details", {
+              modId: mod.modId
+            });
             
             if (details.result === 1) {
               await downloadMod(details, modsPath);
@@ -289,20 +293,23 @@ export default function DownloadTab() {
 
   const downloadMod = async (details: any, modsPath: string) => {
     try {
-      const response = await fetch(`${API_BASE_URL}/workshop/download`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          modId: details.publishedfileid,
-          title: details.title,
-          modsPath: modsPath
-        })
+      // Call Tauri command to download mod
+      const result = await invoke<{ modId: string; modPath: string; folder: string }>("download_mod", {
+        modId: details.publishedfileid,
+        title: details.title,
+        modsPath: modsPath
       });
-
-      if (response.ok) {
-        const mod: BaseMod = await response.json();
-        setDownloadedMods(prev => [...prev, mod]);
-      }
+      
+      // Convert result to BaseMod format
+      const mod: BaseMod = {
+        modId: result.modId,
+        modPath: result.modPath,
+        folder: result.folder,
+        details: details,
+        updated: undefined
+      };
+      
+      setDownloadedMods(prev => [...prev, mod]);
     } catch (error) {
       console.error("Failed to download mod:", error);
       throw error;

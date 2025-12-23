@@ -7,7 +7,7 @@ import { useSettings } from "../contexts/SettingsContext";
 import { useModal } from "../contexts/ModalContext";
 import { useContextMenu, ContextMenuItem } from "../contexts/ContextMenuContext";
 import { useFormatting } from "../hooks/useFormatting";
-import { API_BASE_URL } from "../utils/api";
+import { invoke } from "@tauri-apps/api/core";
 import "./ModList.css";
 
 interface ModListProps {
@@ -59,19 +59,17 @@ export default function ModList({ onUpdateSelected, modsPath }: ModListProps) {
       if (!mod.modPath) return null;
       
       try {
-        // Use modPath and backupDirectory to check for backup
-        const response = await fetch(
-          `${API_BASE_URL}/mod/check-backup?modPath=${encodeURIComponent(mod.modPath)}&backupDirectory=${encodeURIComponent(settings.backupDirectory)}`
-        );
+        // Call Tauri command to check for backup
+        const data = await invoke<{ hasBackup: boolean; backupDate?: number; backupPath?: string }>("check_backup", {
+          modPath: mod.modPath,
+          backupDirectory: settings.backupDirectory || undefined
+        });
         
-        if (response.ok) {
-          const data = await response.json();
-          return { 
-            modId: mod.modId, 
-            hasBackup: data.hasBackup,
-            backupDate: data.backupDate ? new Date(data.backupDate) : null
-          };
-        }
+        return { 
+          modId: mod.modId, 
+          hasBackup: data.hasBackup,
+          backupDate: data.backupDate ? new Date(data.backupDate * 1000) : null // Convert seconds to milliseconds
+        };
       } catch (error) {
         console.warn(`Failed to check backup for mod ${mod.modId}:`, error);
       }
