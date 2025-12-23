@@ -1,8 +1,31 @@
 use std::path::{Path, PathBuf};
 use std::fs;
 use serde::{Deserialize, Serialize};
+use crate::backend::deserializers::{bool_from_int, u64_from_str_or_int, i64_from_str_or_int, i32_from_str_or_int};
+
+// Default value helpers for optional fields
+fn default_i32() -> i32 {
+    0
+}
+
+fn default_u64() -> u64 {
+    0
+}
+
+fn default_i64() -> i64 {
+    0
+}
+
+fn default_bool() -> bool {
+    false
+}
+
+fn default_string() -> String {
+    String::new()
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BaseMod {
     pub mod_id: String,
     pub mod_path: String,
@@ -13,12 +36,17 @@ pub struct BaseMod {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkshopFileDetails {
+    #[serde(default = "default_string")]
     pub publishedfileid: String,
+    #[serde(deserialize_with = "i32_from_str_or_int", default = "default_i32")]
     pub result: i32,
     pub creator: String,
+    #[serde(deserialize_with = "i32_from_str_or_int")]
     pub creator_app_id: i32,
+    #[serde(deserialize_with = "i32_from_str_or_int")]
     pub consumer_app_id: i32,
     pub filename: String,
+    #[serde(deserialize_with = "u64_from_str_or_int")]
     pub file_size: u64,
     pub file_url: String,
     pub hcontent_file: String,
@@ -26,34 +54,67 @@ pub struct WorkshopFileDetails {
     pub hcontent_preview: String,
     pub title: String,
     pub description: String,
+    #[serde(deserialize_with = "i64_from_str_or_int")]
     pub time_created: i64,
+    #[serde(deserialize_with = "i64_from_str_or_int")]
     pub time_updated: i64,
+    #[serde(deserialize_with = "i32_from_str_or_int")]
     pub visibility: i32,
+    #[serde(deserialize_with = "i32_from_str_or_int", default = "default_i32")]
     pub flags: i32,
+    #[serde(default = "default_string")]
     pub workshop_file_url: String,
+    #[serde(deserialize_with = "bool_from_int", default = "default_bool")]
     pub workshop_accepted: bool,
+    #[serde(deserialize_with = "bool_from_int", default = "default_bool")]
     pub show_subscribe_all: bool,
+    #[serde(deserialize_with = "i32_from_str_or_int", default = "default_i32")]
     pub num_comments_developer: i32,
+    #[serde(deserialize_with = "i32_from_str_or_int", default = "default_i32")]
     pub num_comments_public: i32,
+    #[serde(deserialize_with = "bool_from_int", default = "default_bool")]
     pub banned: bool,
+    #[serde(default = "default_string")]
     pub ban_reason: String,
+    #[serde(default = "default_string")]
     pub banner: String,
+    #[serde(deserialize_with = "bool_from_int", default = "default_bool")]
     pub can_be_deleted: bool,
+    #[serde(default = "default_string")]
     pub app_name: String,
+    #[serde(deserialize_with = "i32_from_str_or_int", default = "default_i32")]
     pub file_type: i32,
+    #[serde(deserialize_with = "bool_from_int", default = "default_bool")]
     pub can_subscribe: bool,
+    #[serde(deserialize_with = "i32_from_str_or_int", default = "default_i32")]
     pub subscriptions: i32,
+    #[serde(deserialize_with = "i32_from_str_or_int", default = "default_i32")]
     pub favorited: i32,
+    #[serde(deserialize_with = "i32_from_str_or_int", default = "default_i32")]
     pub followers: i32,
+    #[serde(deserialize_with = "i32_from_str_or_int", default = "default_i32")]
     pub lifetime_subscriptions: i32,
+    #[serde(deserialize_with = "i32_from_str_or_int", default = "default_i32")]
     pub lifetime_favorited: i32,
+    #[serde(deserialize_with = "i32_from_str_or_int", default = "default_i32")]
     pub lifetime_followers: i32,
+    #[serde(default = "default_string")]
     pub lifetime_playtime: String,
+    #[serde(default = "default_string")]
     pub lifetime_playtime_sessions: String,
+    #[serde(deserialize_with = "i32_from_str_or_int", default = "default_i32")]
     pub views: i32,
+    #[serde(deserialize_with = "i32_from_str_or_int", default = "default_i32")]
     pub num_children: i32,
+    #[serde(deserialize_with = "i32_from_str_or_int", default = "default_i32")]
     pub num_reports: i32,
+    #[serde(default)]
     pub tags: Vec<Tag>,
+}
+
+// Default value helper for tags
+fn default_vec_tag() -> Vec<Tag> {
+    Vec::new()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,8 +132,7 @@ pub fn query_mod_id(mod_path: &Path) -> Result<Option<String>, Box<dyn std::erro
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return Ok(None); // Not a mod folder
         }
-        Err(e) => {
-            eprintln!("[QUERYMODID] Error checking About folder for {:?}: {}", mod_path.file_name().unwrap_or_default(), e);
+        Err(_e) => {
             return Ok(None);
         }
     };
@@ -89,8 +149,7 @@ pub fn query_mod_id(mod_path: &Path) -> Result<Option<String>, Box<dyn std::erro
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return Ok(None); // Not a workshop mod
         }
-        Err(e) => {
-            eprintln!("[QUERYMODID] Error accessing PublishedFileId.txt for {:?}: {}", mod_path.file_name().unwrap_or_default(), e);
+        Err(_e) => {
             return Ok(None);
         }
     }
@@ -100,13 +159,11 @@ pub fn query_mod_id(mod_path: &Path) -> Result<Option<String>, Box<dyn std::erro
         Ok(content) => {
             let file_id = content.trim();
             if file_id.is_empty() {
-                eprintln!("[QUERYMODID] PublishedFileId.txt is empty for {:?}", mod_path.file_name().unwrap_or_default());
                 return Ok(None);
             }
             Ok(Some(file_id.to_string()))
         }
-        Err(e) => {
-            eprintln!("[QUERYMODID] Failed to read PublishedFileId.txt from {:?}: {}", mod_path, e);
+        Err(_e) => {
             Ok(None)
         }
     }
@@ -127,20 +184,16 @@ pub fn get_mod_last_updated_time(mod_path: &Path) -> Result<std::time::SystemTim
                     Ok(timestamp) if timestamp > 0 => {
                         let duration = std::time::Duration::from_secs(timestamp as u64);
                         let datetime = std::time::UNIX_EPOCH + duration;
-                        eprintln!("[MODQUERY] Read .lastupdated for {:?}: timestamp={}, date={:?}", 
-                            mod_path.file_name().unwrap_or_default(), timestamp, datetime);
                         return Ok(datetime);
                     }
                     Ok(_) | Err(_) => {
-                        eprintln!("[MODQUERY] Invalid .lastupdated file format at {:?} (content: \"{}\"). Deleting file.", 
-                            last_updated_path, trimmed);
                         let _ = fs::remove_file(&last_updated_path);
                     }
                 }
             }
         }
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
-            eprintln!("[MODQUERY] Error reading .lastupdated file at {:?}: {}", last_updated_path, e);
+        Err(_e) if _e.kind() != std::io::ErrorKind::NotFound => {
+            // Error reading file, continue to fallback
         }
         _ => {}
     }
@@ -201,7 +254,6 @@ pub async fn query_mod_batch(
         Ok(response) => {
             if !response.status().is_success() {
             if retries < MAX_RETRIES {
-                eprintln!("Failed to query batch of {} mods. Retry {}...", mod_ids.len(), retries + 1);
                 tokio::time::sleep(tokio::time::Duration::from_secs(1 * (retries + 1) as u64)).await;
                 return Box::pin(query_mod_batch(mod_ids, retries + 1)).await;
                 } else {
@@ -210,6 +262,7 @@ pub async fn query_mod_batch(
             }
             
             let data: serde_json::Value = response.json().await?;
+            
             let details = data["response"]["publishedfiledetails"]
                 .as_array()
                 .cloned()
@@ -230,11 +283,9 @@ pub async fn query_mod_batch(
         }
         Err(e) => {
             if retries < MAX_RETRIES {
-                eprintln!("Failed to query batch of {} mods. Retry {}...", mod_ids.len(), retries + 1);
                 tokio::time::sleep(tokio::time::Duration::from_secs(1 * (retries + 1) as u64)).await;
                 Box::pin(query_mod_batch(mod_ids, retries + 1)).await
             } else {
-                eprintln!("Failed to query batch of {} mods after {} retries.", mod_ids.len(), MAX_RETRIES);
                 Err(e.into())
             }
         }
@@ -246,20 +297,13 @@ pub async fn query_mods_for_updates(
     mods_path: &Path,
     ignored_mods: &[String],
 ) -> Result<Vec<BaseMod>, Box<dyn std::error::Error>> {
-    eprintln!("[MODQUERY] Starting queryModsForUpdates with modsPath: {:?}", mods_path);
-    if !ignored_mods.is_empty() {
-        eprintln!("[MODQUERY] Will ignore {} mod(s): {}", ignored_mods.len(), ignored_mods.join(", "));
-    }
-    
     // Check if mods path exists
     let metadata = std::fs::metadata(mods_path)?;
     if !metadata.is_dir() {
         return Err(format!("Mods path is not a directory: {:?}", mods_path).into());
     }
-    eprintln!("[MODQUERY] Mods path exists and is a directory: {:?}", mods_path);
 
     // Get all folders in mods directory
-    eprintln!("[MODQUERY] Reading directory contents: {:?}", mods_path);
     let entries = std::fs::read_dir(mods_path)?;
     let folders: Vec<PathBuf> = entries
         .filter_map(|entry| {
@@ -273,16 +317,11 @@ pub async fn query_mods_for_updates(
             })
         })
         .collect();
-    
-    eprintln!("[MODQUERY] Found {} directories (potential mod folders)", folders.len());
 
     let folders_count = folders.len();
     if folders_count == 0 {
-        eprintln!("Tried to query mod folders but found none.");
         return Ok(vec![]);
     }
-
-    eprintln!("Querying {} mod folders for outdated mods...", folders_count);
 
     // Query mod IDs from each folder
     let mut mods: Vec<BaseMod> = Vec::new();
@@ -293,7 +332,6 @@ pub async fn query_mods_for_updates(
             let folder_name = folder.file_name()
                 .and_then(|n| n.to_str())
                 .map(|s| s.to_string());
-            eprintln!("Got valid mod folder {:?} ({})", folder_name.as_ref().unwrap_or(&"unknown".to_string()), mod_id);
             
             mods.push(BaseMod {
                 mod_id: mod_id.clone(),
@@ -306,16 +344,12 @@ pub async fn query_mods_for_updates(
         }
     }
 
-    eprintln!("Found {}/{} valid mod folders.", valid_mod_count, folders_count);
-
     if mods.is_empty() {
         return Ok(vec![]);
     }
 
     // Query mods in batches of 50
     const BATCH_COUNT: usize = 50;
-    let num_batches = (mods.len() + BATCH_COUNT - 1) / BATCH_COUNT;
-    eprintln!("Querying {} mods in {} batches of {}", mods.len(), num_batches, BATCH_COUNT);
 
     // Query all batches sequentially to avoid lifetime issues
     for i in (0..mods.len()).step_by(BATCH_COUNT) {
@@ -333,8 +367,8 @@ pub async fn query_mods_for_updates(
                     }
                 }
             }
-            Err(e) => {
-                eprintln!("Failed to query batch: {}", e);
+            Err(_e) => {
+                // Failed to query batch, continue with next batch
             }
         }
         
@@ -345,10 +379,8 @@ pub async fn query_mods_for_updates(
     }
 
     let mods_with_details: Vec<&BaseMod> = mods.iter().filter(|m| m.details.is_some()).collect();
-    eprintln!("Got workshop file details for {} mods.", mods_with_details.len());
     
     if mods_with_details.is_empty() {
-        eprintln!("[MODQUERY] No mods have details, returning empty array");
         return Ok(vec![]);
     }
 
@@ -360,9 +392,6 @@ pub async fn query_mods_for_updates(
         let details = match &mod_ref.details {
             Some(d) => d,
             None => {
-                eprintln!("Couldn't get any file details for mod {} ({:?}).", 
-                    mod_ref.mod_id, 
-                    mod_ref.folder.as_ref().unwrap_or(&"unknown".to_string()));
                 continue;
             }
         };
@@ -380,28 +409,24 @@ pub async fn query_mods_for_updates(
         
         // Check for various error conditions
         if details.result == 9 {
-            eprintln!("Tried to query workshop file {} ({}) but no file could be found. (Code 9). This could mean the mod has been removed/unlisted", id, folder_name);
-            continue;
+            continue; // Mod has been removed/unlisted
         }
 
         if details.result != 1 {
-            eprintln!("Tried to query workshop file {} ({}) but steam returned code {}", id, folder_name, details.result);
+            continue; // Invalid result code
         }
 
         if details.visibility != 0 {
-            eprintln!("Got workshop file {} ({}) but it's a private file.", id, folder_name);
-            continue;
+            continue; // Private file
         }
 
         // Check if banned
         if details.banned {
-            eprintln!("Got workshop file {} ({}) but it's a banned file.", id, folder_name);
-            continue;
+            continue; // Banned file
         }
 
         if details.creator_app_id != 294100 {
-            eprintln!("Got workshop file {} ({}) but it's not a rimworld mod! (Huh?)", id, folder_name);
-            continue;
+            continue; // Not a Rimworld mod
         }
 
         // Compare dates
@@ -416,28 +441,20 @@ pub async fn query_mods_for_updates(
         // Consider mod as needing update if remote is at least 1 second newer
         let needs_update = time_diff_seconds > 1.0;
 
-        eprintln!("[MODQUERY] Mod {} ({}): remote={:?}, local={:?}, diff={:.1}s, needsUpdate={}", 
-            id, folder_name, remote_date, last_updated_date, time_diff_seconds, needs_update);
-
         // Skip if mod is in ignored list
         if ignored_mods.contains(&mod_ref.mod_id) {
-            eprintln!("[MODQUERY] Mod {} ({}) is in ignored list, skipping.", id, folder_name);
             continue;
         }
 
         if needs_update {
             // Only add if we don't already have this modId (avoid duplicates)
             if !mods_with_updates_map.contains_key(&mod_ref.mod_id) {
-                eprintln!("Mod folder {} ({}) has an update available.", folder_name, details.publishedfileid);
                 mods_with_updates_map.insert(mod_ref.mod_id.clone(), mod_ref.clone());
-            } else {
-                eprintln!("Mod {} ({}) already in update list, skipping duplicate.", mod_ref.mod_id, folder_name);
             }
         }
     }
     
     let mods_with_updates: Vec<BaseMod> = mods_with_updates_map.into_values().collect();
-    eprintln!("There are {} mods with updates available.", mods_with_updates.len());
     Ok(mods_with_updates)
 }
 
