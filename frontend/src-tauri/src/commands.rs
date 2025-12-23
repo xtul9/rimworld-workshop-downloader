@@ -63,23 +63,18 @@ pub async fn update_mods(
         .ok_or("Cannot get mods path from mod path")?
         .to_path_buf();
     
-    // Get SteamCMD download path (same as Node.js backend)
-    let download_path = PathBuf::from("steamcmd")
-        .join("steamapps")
-        .join("workshop")
-        .join("content")
-        .join("294100");
-    
     // Prepare mods for download
     let mod_ids: Vec<String> = mods.iter().map(|m| m.mod_id.clone()).collect();
     
     // Download mods
     let downloader = get_downloader();
-    let downloaded_mods = {
+    let (downloaded_mods, download_path) = {
         let mut dl = downloader.lock().await;
-        dl.download_mods(&mod_ids).await
-    }
-    .map_err(|e| format!("Failed to download mods: {}", e))?;
+        let download_path = dl.download_path().clone();
+        let downloaded_mods = dl.download_mods(&mod_ids).await
+            .map_err(|e| format!("Failed to download mods: {}", e))?;
+        (downloaded_mods, download_path)
+    };
     
     if downloaded_mods.is_empty() {
         return Err("Failed to download any mods. Check SteamCMD logs for details.".to_string());
@@ -90,6 +85,8 @@ pub async fn update_mods(
     let mut updated_mods = Vec::new();
     
     for downloaded_mod in downloaded_mods {
+        eprintln!("[UPDATE_MODS] Processing downloaded mod: {} at {:?}", downloaded_mod.mod_id, downloaded_mod.mod_path);
+        
         let original_mod = mods.iter()
             .find(|m| m.mod_id == downloaded_mod.mod_id)
             .ok_or_else(|| format!("Original mod not found for {}", downloaded_mod.mod_id))?;
@@ -97,7 +94,9 @@ pub async fn update_mods(
         // Get existing folder name from original mod
         let existing_folder_name = original_mod.folder.as_deref();
         
-        // Update mod
+        eprintln!("[UPDATE_MODS] Updating mod {} from {:?} to {:?}", downloaded_mod.mod_id, downloaded_mod.mod_path, mods_path);
+        
+        // Update mod - use downloaded_mod.mod_path directly (it's already the full path)
         let mod_path = updater.update_mod(
             &downloaded_mod.mod_id,
             &downloaded_mod.mod_path,
@@ -106,7 +105,12 @@ pub async fn update_mods(
             existing_folder_name,
             backup_mods,
             backup_directory.as_deref().map(PathBuf::from).as_deref(),
-        ).await.map_err(|e| format!("Failed to update mod {}: {}", downloaded_mod.mod_id, e))?;
+        ).await.map_err(|e| {
+            eprintln!("[UPDATE_MODS] Error updating mod {}: {}", downloaded_mod.mod_id, e);
+            format!("Failed to update mod {}: {}", downloaded_mod.mod_id, e)
+        })?;
+        
+        eprintln!("[UPDATE_MODS] Successfully updated mod {} to {:?}", downloaded_mod.mod_id, mod_path);
         
         // Get remote update time from original mod details
         let remote_update_time = original_mod.details.as_ref()

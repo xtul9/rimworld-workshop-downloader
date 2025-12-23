@@ -22,6 +22,11 @@ impl Downloader {
         }
     }
 
+    /// Get the download path where mods are downloaded
+    pub fn download_path(&self) -> &PathBuf {
+        &self.download_path
+    }
+
     /// Find SteamCMD executable from application resources or PATH
     pub async fn find_steamcmd_executable(&self) -> Result<PathBuf, String> {
         // Try to find in application resources first
@@ -122,9 +127,30 @@ impl Downloader {
 
         eprintln!("Downloading {} workshop mods with SteamCMD", mod_ids.len());
 
-        // Create steamcmd script
+        // Get absolute path to steamcmd directory
+        let steamcmd_path_absolute = if self.steamcmd_path.is_absolute() {
+            self.steamcmd_path.clone()
+        } else {
+            let current_dir = std::env::current_dir()
+                .map_err(|e| format!("Failed to get current directory: {}", e))?;
+            current_dir.join(&self.steamcmd_path)
+        };
+        
+        // Get absolute path to download directory
+        let download_path_absolute = if self.download_path.is_absolute() {
+            self.download_path.clone()
+        } else {
+            let current_dir = std::env::current_dir()
+                .map_err(|e| format!("Failed to get current directory: {}", e))?;
+            current_dir.join(&self.download_path)
+        };
+
+        eprintln!("[Downloader] SteamCMD path (absolute): {:?}", steamcmd_path_absolute);
+        eprintln!("[Downloader] Download path (absolute): {:?}", download_path_absolute);
+
+        // Create steamcmd script - use absolute path
         let mut script_lines = vec![
-            format!("force_install_dir \"{}\"", self.steamcmd_path.to_string_lossy()),
+            format!("force_install_dir \"{}\"", steamcmd_path_absolute.to_string_lossy()),
             "login anonymous".to_string(),
         ];
         
@@ -139,40 +165,96 @@ impl Downloader {
         fs::write(&script_path, script_content)
             .map_err(|e| format!("Failed to write SteamCMD script: {}", e))?;
 
+        // Get absolute path to script file
+        let script_path_absolute = if script_path.is_absolute() {
+            script_path
+        } else {
+            // Convert to absolute path
+            let current_dir = std::env::current_dir()
+                .map_err(|e| format!("Failed to get current directory: {}", e))?;
+            current_dir.join(&script_path)
+        };
+
         // Find SteamCMD executable
         let steamcmd_executable = self.find_steamcmd_executable().await?;
+        eprintln!("[Downloader] Using SteamCMD executable: {:?}", steamcmd_executable);
+        eprintln!("[Downloader] Working directory: {:?}", self.steamcmd_path);
+        eprintln!("[Downloader] Download path: {:?}", self.download_path);
+        eprintln!("[Downloader] Script path (absolute): {:?}", script_path_absolute);
 
-        // Start watching folders before starting download
-        let download_path = self.download_path.clone();
+        // Start watching folders before starting download - use absolute path
         let mut download_promises = Vec::new();
         for mod_id in mod_ids {
-            let mod_download_path = download_path.join(mod_id.clone());
+            let mod_download_path = download_path_absolute.join(mod_id.clone());
+            eprintln!("[Downloader] Will watch for mod {} at {:?}", mod_id, mod_download_path);
             let mod_id_clone = mod_id.clone();
             download_promises.push(Self::wait_for_mod_download_static(mod_download_path, mod_id_clone));
         }
 
-        // Start SteamCMD process
-        let steamcmd_process = Command::new(&steamcmd_executable)
+        eprintln!("[Downloader] Starting SteamCMD process...");
+        // Start SteamCMD process - use absolute path to script and working directory
+        let mut steamcmd_process = Command::new(&steamcmd_executable)
             .arg("+runscript")
-            .arg(&script_path)
-            .current_dir(&self.steamcmd_path)
+            .arg(&script_path_absolute)
+            .current_dir(&steamcmd_path_absolute)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
             .map_err(|e| format!("Failed to spawn SteamCMD: {}", e))?;
 
+        eprintln!("[Downloader] SteamCMD process started (PID: {:?})", steamcmd_process.id());
+
+        // Read output in background
+        let stdout = steamcmd_process.stdout.take();
+        let stderr = steamcmd_process.stderr.take();
+        
+        let stdout_task = if let Some(stdout) = stdout {
+            tokio::spawn(async move {
+                use tokio::io::{AsyncBufReadExt, BufReader};
+                let reader = BufReader::new(stdout);
+                let mut lines = reader.lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    eprintln!("[SteamCMD stdout] {}", line);
+                }
+            })
+        } else {
+            tokio::spawn(async {})
+        };
+
+        let stderr_task = if let Some(stderr) = stderr {
+            tokio::spawn(async move {
+                use tokio::io::{AsyncBufReadExt, BufReader};
+                let reader = BufReader::new(stderr);
+                let mut lines = reader.lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    eprintln!("[SteamCMD stderr] {}", line);
+                }
+            })
+        } else {
+            tokio::spawn(async {})
+        };
+
         // Wait for SteamCMD to start and login
+        eprintln!("[Downloader] Waiting 3 seconds for SteamCMD to start...");
         sleep(Duration::from_secs(3)).await;
 
         // Wait for SteamCMD to exit
-        let output = steamcmd_process.wait_with_output().await
+        eprintln!("[Downloader] Waiting for SteamCMD to exit...");
+        let status = steamcmd_process.wait().await
             .map_err(|e| format!("Failed to wait for SteamCMD: {}", e))?;
         
-        if !output.status.success() {
-            eprintln!("[Downloader] SteamCMD exited with code {:?}", output.status.code());
+        // Wait a bit for output reading to complete
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        
+        if !status.success() {
+            eprintln!("[Downloader] SteamCMD exited with code {:?}", status.code());
         } else {
             eprintln!("[Downloader] SteamCMD exited successfully");
         }
+        
+        // Cancel output reading tasks
+        stdout_task.abort();
+        stderr_task.abort();
 
         // Wait a bit more for file system operations to complete
         sleep(Duration::from_secs(2)).await;
@@ -198,33 +280,63 @@ impl Downloader {
         let timeout = Duration::from_secs(300); // 5 minutes timeout
         let start_time = std::time::Instant::now();
         let check_interval = Duration::from_secs(1);
+        let mut last_log_time = std::time::Instant::now();
+        let log_interval = Duration::from_secs(10); // Log every 10 seconds
+
+        eprintln!("[Downloader] Starting to watch for mod {} at {:?}", mod_id, mod_download_path);
 
         loop {
-            if let Ok(metadata) = fs::metadata(&mod_download_path) {
-                if metadata.is_dir() {
-                    // Mod folder exists, check if it has content
-                    if let Ok(entries) = fs::read_dir(&mod_download_path) {
-                        let count = entries.count();
-                        if count > 0 {
-                            eprintln!("[Downloader] Mod {} downloaded successfully to {:?}", mod_id, mod_download_path);
-                            let folder = mod_download_path.file_name()
-                                .and_then(|n| n.to_str())
-                                .map(|s| s.to_string());
-                            return Ok(Some(DownloadedMod {
-                                mod_id: mod_id.clone(),
-                                mod_path: mod_download_path,
-                                folder,
-                            }));
-                        } else {
-                            eprintln!("[Downloader] Mod {} folder exists but is empty, waiting...", mod_id);
+            // Check if path exists
+            match fs::metadata(&mod_download_path) {
+                Ok(metadata) => {
+                    if metadata.is_dir() {
+                        // Mod folder exists, check if it has content
+                        match fs::read_dir(&mod_download_path) {
+                            Ok(entries) => {
+                                let count = entries.count();
+                                if count > 0 {
+                                    eprintln!("[Downloader] Mod {} downloaded successfully to {:?} (found {} items)", mod_id, mod_download_path, count);
+                                    let folder = mod_download_path.file_name()
+                                        .and_then(|n| n.to_str())
+                                        .map(|s| s.to_string());
+                                    return Ok(Some(DownloadedMod {
+                                        mod_id: mod_id.clone(),
+                                        mod_path: mod_download_path,
+                                        folder,
+                                    }));
+                                } else {
+                                    if last_log_time.elapsed() >= log_interval {
+                                        eprintln!("[Downloader] Mod {} folder exists but is empty, waiting... ({:.0}s elapsed)", mod_id, start_time.elapsed().as_secs());
+                                        last_log_time = std::time::Instant::now();
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                if last_log_time.elapsed() >= log_interval {
+                                    eprintln!("[Downloader] Error reading mod {} directory: {} ({:.0}s elapsed)", mod_id, e, start_time.elapsed().as_secs());
+                                    last_log_time = std::time::Instant::now();
+                                }
+                            }
                         }
+                    } else {
+                        if last_log_time.elapsed() >= log_interval {
+                            eprintln!("[Downloader] Mod {} path exists but is not a directory ({:.0}s elapsed)", mod_id, start_time.elapsed().as_secs());
+                            last_log_time = std::time::Instant::now();
+                        }
+                    }
+                }
+                Err(_) => {
+                    // Path doesn't exist yet
+                    if last_log_time.elapsed() >= log_interval {
+                        eprintln!("[Downloader] Waiting for mod {} to appear at {:?} ({:.0}s elapsed)", mod_id, mod_download_path, start_time.elapsed().as_secs());
+                        last_log_time = std::time::Instant::now();
                     }
                 }
             }
 
             // Check timeout
             if start_time.elapsed() > timeout {
-                eprintln!("[Downloader] Timeout waiting for mod {} to download at {:?}", mod_id, mod_download_path);
+                eprintln!("[Downloader] Timeout waiting for mod {} to download at {:?} (waited {:.0}s)", mod_id, mod_download_path, timeout.as_secs());
                 return Ok(None);
             }
 

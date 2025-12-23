@@ -1,17 +1,35 @@
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 
-/// Helper function to deserialize integer (0/1) to boolean
+/// Helper function to deserialize integer (0/1) or boolean to boolean
+/// Accepts both u8 (0/1) from Steam API and boolean from frontend
 pub fn bool_from_int<'de, D>(deserializer: D) -> Result<bool, D::Error>
 where
     D: Deserializer<'de>,
 {
-    match u8::deserialize(deserializer)? {
-        0 => Ok(false),
-        1 => Ok(true),
-        other => Err(serde::de::Error::invalid_value(
-            serde::de::Unexpected::Unsigned(other as u64),
-            &"0 or 1",
+    let value = Value::deserialize(deserializer)?;
+    match value {
+        Value::Bool(b) => Ok(b),
+        Value::Number(n) => {
+            if let Some(u) = n.as_u64() {
+                match u {
+                    0 => Ok(false),
+                    1 => Ok(true),
+                    other => Err(serde::de::Error::invalid_value(
+                        serde::de::Unexpected::Unsigned(other),
+                        &"0 or 1",
+                    )),
+                }
+            } else {
+                Err(serde::de::Error::invalid_type(
+                    serde::de::Unexpected::Other("number that cannot be represented as u64"),
+                    &"a boolean or u8 (0/1)",
+                ))
+            }
+        }
+        other => Err(serde::de::Error::invalid_type(
+            serde::de::Unexpected::Other(&format!("{:?}", other)),
+            &"a boolean or u8 (0/1)",
         )),
     }
 }

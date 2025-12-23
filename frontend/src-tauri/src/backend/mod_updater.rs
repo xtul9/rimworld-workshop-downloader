@@ -104,19 +104,23 @@ impl ModUpdater {
 
         // Copy mod from download folder to game mods folder
         let source_path = if mod_path.exists() && mod_path.is_dir() {
+            eprintln!("[ModUpdater] Using mod_path as source: {:?}", mod_path);
             mod_path.to_path_buf()
         } else {
-            download_path.join(mod_id)
+            let fallback_path = download_path.join(mod_id);
+            eprintln!("[ModUpdater] mod_path {:?} doesn't exist, using fallback: {:?}", mod_path, fallback_path);
+            fallback_path
         };
         
         if !source_path.exists() || !source_path.is_dir() {
             return Err(format!("Source mod folder not found: {:?}", source_path));
         }
 
+        eprintln!("[ModUpdater] Copying mod from {:?} to {:?}", source_path, mod_destination_path);
         copy_dir_all(&source_path, &mod_destination_path)
             .map_err(|e| format!("Failed to copy mod: {}", e))?;
 
-        eprintln!("Mod {} copied to {:?}", mod_id, mod_destination_path);
+        eprintln!("[ModUpdater] Mod {} copied successfully to {:?}", mod_id, mod_destination_path);
 
         Ok(mod_destination_path)
     }
