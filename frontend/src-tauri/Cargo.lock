@@ -3581,8 +3581,10 @@ dependencies = [
 
 [[package]]
 name = "rimworld-workshop-downloader"
-version = "0.2.0"
+version = "0.2.8"
 dependencies = [
+ "futures",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",
@@ -3592,7 +3594,9 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-opener",
  "tauri-plugin-store",
+ "tempfile",
  "tokio",
+ "url",
 ]
 
 [[package]]

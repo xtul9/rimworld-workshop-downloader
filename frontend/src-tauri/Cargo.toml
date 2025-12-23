@@ -27,4 +27,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 reqwest = { version = "0.12", features = ["json"] }
 tokio = { version = "1", features = ["full"] }
+url = "2.5"
+regex = "1.10"
+futures = "0.3"
+
+[dev-dependencies]
+tempfile = "3.10"
 

@@ -2,6 +2,8 @@ use std::process::{Command, Child};
 use std::sync::Mutex;
 use tauri::Manager;
 
+mod backend;
+
 static NODE_PROCESS: Mutex<Option<Child>> = Mutex::new(None);
 
 fn start_node_backend(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
