@@ -364,13 +364,12 @@ pub async fn check_backups(
     }
 }
 
-/// Restore mod from backup
+/// Restore mod from backup (optimized with async I/O)
 #[tauri::command]
 pub async fn restore_backup(
     mod_path: String,
     backup_directory: String,
 ) -> Result<serde_json::Value, String> {
-    use std::fs;
     
     let normalized_mod_path = PathBuf::from(&mod_path);
     let normalized_backup_directory = PathBuf::from(&backup_directory);
@@ -398,24 +397,42 @@ pub async fn restore_backup(
         return Err("Backup path and mod path cannot be the same. Please ensure backup directory is different from mods directory.".to_string());
     }
     
-    // Check if backup exists
-    if !backup_path.exists() {
+    // Check if backup exists (async)
+    let backup_exists = tokio::task::spawn_blocking({
+        let backup_path = backup_path.clone();
+        move || backup_path.exists()
+    }).await
+    .map_err(|e| format!("Task panicked: {:?}", e))?;
+    
+    if !backup_exists {
         return Err("Backup not found".to_string());
     }
     
-    // Remove current mod folder
-    if normalized_mod_path.exists() {
-        fs::remove_dir_all(&normalized_mod_path)
-            .map_err(|e| format!("Failed to remove current mod folder: {}", e))?;
-    }
+    // Remove current mod folder (async)
+    let mod_path_clone = normalized_mod_path.clone();
+    tokio::task::spawn_blocking(move || {
+        if mod_path_clone.exists() {
+            std::fs::remove_dir_all(&mod_path_clone)
+                .map_err(|e| format!("Failed to remove current mod folder: {}", e))?;
+        }
+        Ok::<(), String>(())
+    }).await
+    .map_err(|e| format!("Task panicked: {:?}", e))??;
     
-    // Copy backup to mods folder
-    copy_dir_all(&backup_path, &normalized_mod_path)
+    // Copy backup to mods folder (async)
+    use crate::backend::mod_updater::copy_dir_all_async;
+    let backup_path_clone = backup_path.clone();
+    let mod_path_clone2 = normalized_mod_path.clone();
+    copy_dir_all_async(&backup_path_clone, &mod_path_clone2).await
         .map_err(|e| format!("Failed to copy backup: {}", e))?;
     
-    // Delete the backup
-    fs::remove_dir_all(&backup_path)
-        .map_err(|e| format!("Failed to delete backup: {}", e))?;
+    // Delete the backup (async) - only after successful copy
+    let backup_path_clone2 = backup_path.clone();
+    tokio::task::spawn_blocking(move || {
+        std::fs::remove_dir_all(&backup_path_clone2)
+            .map_err(|e| format!("Failed to delete backup: {}", e))
+    }).await
+    .map_err(|e| format!("Task panicked: {:?}", e))??;
     
     Ok(serde_json::json!({
         "message": "Backup restored successfully",
@@ -423,29 +440,55 @@ pub async fn restore_backup(
     }))
 }
 
-/// Recursively copy directory
-fn copy_dir_all(src: &PathBuf, dst: &PathBuf) -> Result<(), String> {
-    use std::fs;
+/// Restore backups for multiple mods (optimized batch version)
+#[tauri::command]
+pub async fn restore_backups(
+    mod_paths: Vec<String>,
+    backup_directory: String,
+) -> Result<serde_json::Value, String> {
+    if mod_paths.is_empty() {
+        return Ok(serde_json::json!({}));
+    }
     
-    fs::create_dir_all(dst)
-        .map_err(|e| format!("Failed to create directory {}: {}", dst.display(), e))?;
+    // Restore all backups in parallel
+    let mut restore_futures = Vec::new();
     
-    for entry in fs::read_dir(src)
-        .map_err(|e| format!("Failed to read directory {}: {}", src.display(), e))? {
-        let entry = entry.map_err(|e| format!("Failed to read directory entry: {}", e))?;
-        let path = entry.path();
-        let file_name = entry.file_name();
-        let dst_path = dst.join(&file_name);
+    for mod_path in mod_paths {
+        let mod_path_clone = mod_path.clone();
+        let backup_dir_clone = backup_directory.clone();
         
-        if path.is_dir() {
-            copy_dir_all(&path, &dst_path)?;
-        } else {
-            fs::copy(&path, &dst_path)
-                .map_err(|e| format!("Failed to copy {} to {}: {}", path.display(), dst_path.display(), e))?;
+        // Spawn restore task for each mod
+        let future = async move {
+            let result = restore_backup(mod_path_clone.clone(), backup_dir_clone).await;
+            (mod_path_clone, result)
+        };
+        
+        restore_futures.push(future);
+    }
+    
+    // Wait for all restores to complete
+    let results = futures::future::join_all(restore_futures).await;
+    
+    // Build result map
+    let mut result_map = serde_json::Map::new();
+    for (mod_path, result) in results {
+        match result {
+            Ok(success_data) => {
+                result_map.insert(mod_path, serde_json::json!({
+                    "success": true,
+                    "data": success_data
+                }));
+            }
+            Err(error_msg) => {
+                result_map.insert(mod_path, serde_json::json!({
+                    "success": false,
+                    "error": error_msg
+                }));
+            }
         }
     }
     
-    Ok(())
+    Ok(serde_json::Value::Object(result_map))
 }
 
 /// Ignore this update - update .lastupdated file with current remote timestamp

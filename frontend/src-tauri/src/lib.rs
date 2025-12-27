@@ -245,6 +245,7 @@ pub fn run() {
             commands::check_backup,
             commands::check_backups,
             commands::restore_backup,
+            commands::restore_backups,
             commands::ignore_update,
             commands::get_file_details,
             commands::is_collection,
