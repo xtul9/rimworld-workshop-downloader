@@ -3,6 +3,10 @@ use std::fs;
 use std::time::Duration;
 use tokio::time::sleep;
 use tokio::process::Command;
+use futures;
+use tauri::{AppHandle, Emitter};
+use notify::{Watcher, RecommendedWatcher, RecursiveMode, Event};
+use std::sync::{mpsc, Arc, Mutex};
 
 pub struct Downloader {
     steamcmd_path: PathBuf,
@@ -112,8 +116,80 @@ impl Downloader {
         Ok(None)
     }
 
-    /// Download mods using SteamCMD
-    pub async fn download_mods(&mut self, mod_ids: &[String]) -> Result<Vec<DownloadedMod>, String> {
+    /// Balance mods across instances using round-robin (simple fallback)
+    fn balance_mods_round_robin(mod_ids: &[String], num_instances: usize) -> Vec<Vec<String>> {
+        let mut batches: Vec<Vec<String>> = vec![Vec::new(); num_instances];
+        for (idx, mod_id) in mod_ids.iter().enumerate() {
+            batches[idx % num_instances].push(mod_id.clone());
+        }
+        batches
+    }
+
+    /// Balance mods across instances by size (load balancing)
+    /// Uses a greedy algorithm: assign each mod to the instance with the least current load
+    fn balance_mods_by_size(
+        mod_ids: &[String],
+        mod_sizes: &std::collections::HashMap<String, u64>,
+        num_instances: usize,
+    ) -> Vec<Vec<String>> {
+        // Sort mods by size (largest first) for better balancing
+        let mut mods_with_sizes: Vec<(String, u64)> = mod_ids
+            .iter()
+            .map(|mod_id| {
+                let size = mod_sizes.get(mod_id).copied().unwrap_or(0);
+                (mod_id.clone(), size)
+            })
+            .collect();
+        
+        // Sort by size descending (largest first) for better load balancing
+        mods_with_sizes.sort_by(|a, b| b.1.cmp(&a.1));
+        
+        // Track current load for each instance
+        let mut instance_loads: Vec<u64> = vec![0; num_instances];
+        let mut batches: Vec<Vec<String>> = vec![Vec::new(); num_instances];
+        
+        // Greedy assignment: assign each mod to the instance with the least current load
+        for (mod_id, size) in mods_with_sizes {
+            // Find instance with minimum load
+            let min_load_idx = instance_loads
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, &load)| load)
+                .map(|(idx, _)| idx)
+                .unwrap_or(0);
+            
+            // Assign mod to this instance
+            batches[min_load_idx].push(mod_id);
+            instance_loads[min_load_idx] += size;
+        }
+        
+        // Log load distribution for debugging
+        eprintln!("[Downloader] Load distribution (size-based):");
+        for (idx, load) in instance_loads.iter().enumerate() {
+            eprintln!("[Downloader]   Instance {}: {} mod(s), {} bytes", idx, batches[idx].len(), load);
+        }
+        
+        batches
+    }
+
+    /// Download mods using SteamCMD with parallel instances for better performance
+    /// For small batches (<=4 mods), uses single instance. For larger batches, uses up to 4 parallel instances.
+    /// If mod_sizes is provided, mods are balanced by size across instances.
+    pub async fn download_mods(&mut self, mod_ids: &[String], app: Option<&AppHandle>) -> Result<Vec<DownloadedMod>, String> {
+        self.download_mods_with_sizes(mod_ids, None, app).await
+    }
+
+    /// Download mods with optional size information for load balancing
+    pub async fn download_mods_with_sizes(
+        &mut self,
+        mod_ids: &[String],
+        mod_sizes: Option<&std::collections::HashMap<String, u64>>,
+        app: Option<&AppHandle>,
+    ) -> Result<Vec<DownloadedMod>, String> {
+        if mod_ids.is_empty() {
+            return Ok(vec![]);
+        }
+
         // Delete appworkshop file if it exists
         let appworkshop_path = self.steamcmd_path
             .join("steamapps")
@@ -125,74 +201,139 @@ impl Downloader {
         fs::create_dir_all(&self.download_path)
             .map_err(|e| format!("Failed to create download directory: {}", e))?;
 
-        eprintln!("Downloading {} workshop mods with SteamCMD", mod_ids.len());
+        const MAX_PARALLEL_INSTANCES: usize = 4; // Hard limit - never exceed this
 
-        // Get absolute path to steamcmd directory
-        let steamcmd_path_absolute = if self.steamcmd_path.is_absolute() {
-            self.steamcmd_path.clone()
+        // Calculate number of instances: use as many as possible (up to MAX_PARALLEL_INSTANCES)
+        // For 3+ mods, always use parallel instances to maximize throughput
+        let num_instances = std::cmp::min(mod_ids.len(), MAX_PARALLEL_INSTANCES);
+        
+        // Balance mods across instances by size if sizes are available
+        let batches = if let Some(sizes) = mod_sizes {
+            eprintln!("[Downloader] Using {} parallel SteamCMD instances for {} mod(s) (size-based load balancing)", num_instances, mod_ids.len());
+            Self::balance_mods_by_size(mod_ids, sizes, num_instances)
         } else {
-            let current_dir = std::env::current_dir()
-                .map_err(|e| format!("Failed to get current directory: {}", e))?;
-            current_dir.join(&self.steamcmd_path)
+            eprintln!("[Downloader] Using {} parallel SteamCMD instances for {} mod(s) (round-robin distribution)", num_instances, mod_ids.len());
+            // Fallback to simple round-robin if no size information
+            Self::balance_mods_round_robin(mod_ids, num_instances)
         };
         
-        // Get absolute path to download directory
-        let download_path_absolute = if self.download_path.is_absolute() {
-            self.download_path.clone()
+        // Log batch distribution
+        for (batch_idx, batch) in batches.iter().enumerate() {
+            if !batch.is_empty() {
+                eprintln!("[Downloader] Instance {}: {} mod(s)", batch_idx, batch.len());
+            }
+        }
+        
+        let mut batch_futures = Vec::new();
+        let steamcmd_executable = self.find_steamcmd_executable().await?;
+        
+        for (batch_idx, batch) in batches.into_iter().enumerate() {
+            if batch.is_empty() {
+                continue;
+            }
+            
+            let steamcmd_path = self.steamcmd_path.clone();
+            let download_path = self.download_path.clone();
+            
+            let future = Self::download_mods_batch(
+                steamcmd_executable.clone(),
+                steamcmd_path,
+                download_path,
+                batch,
+                batch_idx,
+                app.cloned()
+            );
+            batch_futures.push(future);
+        }
+        
+        // Wait for all batches to complete in parallel
+        let batch_results = futures::future::join_all(batch_futures).await;
+        let mut all_downloaded_mods = Vec::new();
+        let mut success_count = 0;
+        let mut failure_count = 0;
+        
+        for (batch_idx, result) in batch_results.into_iter().enumerate() {
+            match result {
+                Ok(mods) => {
+                    let mods_count = mods.len();
+                    success_count += 1;
+                    all_downloaded_mods.extend(mods);
+                    eprintln!("[Downloader] Instance {}: completed successfully ({} mod(s))", batch_idx, mods_count);
+                }
+                Err(e) => {
+                    failure_count += 1;
+                    eprintln!("[Downloader] Instance {}: failed - {}", batch_idx, e);
+                }
+            }
+        }
+        
+        eprintln!("[Downloader] All instances completed: {} succeeded, {} failed, {} total mod(s) downloaded", success_count, failure_count, all_downloaded_mods.len());
+        Ok(all_downloaded_mods)
+    }
+
+    /// Download a batch of mods using a single SteamCMD instance (static version for parallel execution)
+    async fn download_mods_batch(
+        steamcmd_executable: PathBuf,
+        steamcmd_path: PathBuf,
+        download_path: PathBuf,
+        mod_ids: Vec<String>,
+        batch_idx: usize,
+        app: Option<AppHandle>,
+    ) -> Result<Vec<DownloadedMod>, String> {
+        eprintln!("[Downloader] Instance {}: starting download", batch_idx);
+
+        // Get absolute paths
+        let steamcmd_path_absolute = if steamcmd_path.is_absolute() {
+            steamcmd_path.clone()
         } else {
             let current_dir = std::env::current_dir()
                 .map_err(|e| format!("Failed to get current directory: {}", e))?;
-            current_dir.join(&self.download_path)
+            current_dir.join(&steamcmd_path)
+        };
+        
+        let download_path_absolute = if download_path.is_absolute() {
+            download_path.clone()
+        } else {
+            let current_dir = std::env::current_dir()
+                .map_err(|e| format!("Failed to get current directory: {}", e))?;
+            current_dir.join(&download_path)
         };
 
-        eprintln!("[Downloader] SteamCMD path (absolute): {:?}", steamcmd_path_absolute);
-        eprintln!("[Downloader] Download path (absolute): {:?}", download_path_absolute);
-
-        // Create steamcmd script - use absolute path
+        // Create unique script file for this batch
+        let script_path = steamcmd_path.join(format!("run_batch_{}.txt", batch_idx));
         let mut script_lines = vec![
             format!("force_install_dir \"{}\"", steamcmd_path_absolute.to_string_lossy()),
             "login anonymous".to_string(),
         ];
         
-        for mod_id in mod_ids {
+        for mod_id in &mod_ids {
             script_lines.push(format!("workshop_download_item 294100 {}", mod_id));
         }
         
         script_lines.push("quit".to_string());
-
         let script_content = script_lines.join("\n") + "\n";
-        let script_path = self.steamcmd_path.join("run.txt");
+        
         fs::write(&script_path, script_content)
             .map_err(|e| format!("Failed to write SteamCMD script: {}", e))?;
 
-        // Get absolute path to script file
         let script_path_absolute = if script_path.is_absolute() {
-            script_path
+            script_path.clone()
         } else {
-            // Convert to absolute path
             let current_dir = std::env::current_dir()
                 .map_err(|e| format!("Failed to get current directory: {}", e))?;
             current_dir.join(&script_path)
         };
 
-        // Find SteamCMD executable
-        let steamcmd_executable = self.find_steamcmd_executable().await?;
-        eprintln!("[Downloader] Using SteamCMD executable: {:?}", steamcmd_executable);
-        eprintln!("[Downloader] Working directory: {:?}", self.steamcmd_path);
-        eprintln!("[Downloader] Download path: {:?}", self.download_path);
-        eprintln!("[Downloader] Script path (absolute): {:?}", script_path_absolute);
-
-        // Start watching folders before starting download - use absolute path
+        // Start watching folders before starting download
         let mut download_promises = Vec::new();
-        for mod_id in mod_ids {
+        for mod_id in &mod_ids {
             let mod_download_path = download_path_absolute.join(mod_id.clone());
-            eprintln!("[Downloader] Will watch for mod {} at {:?}", mod_id, mod_download_path);
             let mod_id_clone = mod_id.clone();
-            download_promises.push(Self::wait_for_mod_download_static(mod_download_path, mod_id_clone));
+            let app_clone = app.clone();
+            download_promises.push(Self::wait_for_mod_download_static(mod_download_path, mod_id_clone, app_clone));
         }
 
-        eprintln!("[Downloader] Starting SteamCMD process...");
-        // Start SteamCMD process - use absolute path to script and working directory
+        // Start SteamCMD process
         let mut steamcmd_process = Command::new(&steamcmd_executable)
             .arg("+runscript")
             .arg(&script_path_absolute)
@@ -202,72 +343,57 @@ impl Downloader {
             .spawn()
             .map_err(|e| format!("Failed to spawn SteamCMD: {}", e))?;
 
-        eprintln!("[Downloader] SteamCMD process started (PID: {:?})", steamcmd_process.id());
-
-        // Read output in background
+        // Read output in background (simplified - just consume it)
         let stdout = steamcmd_process.stdout.take();
         let stderr = steamcmd_process.stderr.take();
         
-        let stdout_task = if let Some(stdout) = stdout {
+        let _stdout_task = if let Some(stdout) = stdout {
             tokio::spawn(async move {
                 use tokio::io::{AsyncBufReadExt, BufReader};
                 let reader = BufReader::new(stdout);
                 let mut lines = reader.lines();
-                while let Ok(Some(line)) = lines.next_line().await {
-                    eprintln!("[SteamCMD stdout] {}", line);
+                while let Ok(Some(_line)) = lines.next_line().await {
+                    // Output is logged but not critical for batch operations
                 }
             })
         } else {
             tokio::spawn(async {})
         };
 
-        let stderr_task = if let Some(stderr) = stderr {
+        let _stderr_task = if let Some(stderr) = stderr {
             tokio::spawn(async move {
                 use tokio::io::{AsyncBufReadExt, BufReader};
                 let reader = BufReader::new(stderr);
                 let mut lines = reader.lines();
-                while let Ok(Some(line)) = lines.next_line().await {
-                    eprintln!("[SteamCMD stderr] {}", line);
+                while let Ok(Some(_line)) = lines.next_line().await {
+                    // Output is logged but not critical for batch operations
                 }
             })
         } else {
             tokio::spawn(async {})
         };
 
-        // Wait for SteamCMD to start and login
-        eprintln!("[Downloader] Waiting 3 seconds for SteamCMD to start...");
-        sleep(Duration::from_secs(3)).await;
-
-        // Wait for SteamCMD to exit
-        eprintln!("[Downloader] Waiting for SteamCMD to exit...");
-        let status = steamcmd_process.wait().await
-            .map_err(|e| format!("Failed to wait for SteamCMD: {}", e))?;
-        
-        // Wait a bit for output reading to complete
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        
-        if !status.success() {
-            eprintln!("[Downloader] SteamCMD exited with code {:?}", status.code());
-        } else {
-            eprintln!("[Downloader] SteamCMD exited successfully");
-        }
-        
-        // Cancel output reading tasks
-        stdout_task.abort();
-        stderr_task.abort();
-
-        // Wait a bit more for file system operations to complete
+        // Wait for SteamCMD to start
         sleep(Duration::from_secs(2)).await;
 
-        // Wait for all mod downloads to be detected
-        eprintln!("[Downloader] Waiting for {} mod(s) to be detected...", download_promises.len());
+        // Wait for SteamCMD to exit
+        let _status = steamcmd_process.wait().await
+            .map_err(|e| format!("Failed to wait for SteamCMD: {}", e))?;
+
+        // Wait a bit for file system operations
+        sleep(Duration::from_secs(1)).await;
+
+        // Wait for all mod downloads to be detected in parallel
+        let download_results = futures::future::join_all(download_promises).await;
         let mut downloaded_mods = Vec::new();
-        for promise in download_promises {
-            if let Ok(Some(mod_info)) = promise.await {
+        for result in download_results {
+            if let Ok(Some(mod_info)) = result {
                 downloaded_mods.push(mod_info);
             }
         }
-        eprintln!("[Downloader] Detected {} downloaded mod(s)", downloaded_mods.len());
+
+        // Clean up script file
+        let _ = fs::remove_file(&script_path);
 
         Ok(downloaded_mods)
     }
@@ -276,72 +402,175 @@ impl Downloader {
     async fn wait_for_mod_download_static(
         mod_download_path: PathBuf,
         mod_id: String,
+        app: Option<AppHandle>,
     ) -> Result<Option<DownloadedMod>, String> {
-        let timeout = Duration::from_secs(300); // 5 minutes timeout
+        let timeout = Duration::from_secs(600); // 10 minutes timeout
         let start_time = std::time::Instant::now();
-        let check_interval = Duration::from_secs(1);
-        let mut last_log_time = std::time::Instant::now();
-        let log_interval = Duration::from_secs(10); // Log every 10 seconds
-
-        eprintln!("[Downloader] Starting to watch for mod {} at {:?}", mod_id, mod_download_path);
-
-        loop {
-            // Check if path exists
-            match fs::metadata(&mod_download_path) {
-                Ok(metadata) => {
-                    if metadata.is_dir() {
-                        // Mod folder exists, check if it has content
-                        match fs::read_dir(&mod_download_path) {
-                            Ok(entries) => {
-                                let count = entries.count();
-                                if count > 0 {
-                                    eprintln!("[Downloader] Mod {} downloaded successfully to {:?} (found {} items)", mod_id, mod_download_path, count);
-                                    let folder = mod_download_path.file_name()
-                                        .and_then(|n| n.to_str())
-                                        .map(|s| s.to_string());
-                                    return Ok(Some(DownloadedMod {
-                                        mod_id: mod_id.clone(),
-                                        mod_path: mod_download_path,
-                                        folder,
-                                    }));
-                                } else {
-                                    if last_log_time.elapsed() >= log_interval {
-                                        eprintln!("[Downloader] Mod {} folder exists but is empty, waiting... ({:.0}s elapsed)", mod_id, start_time.elapsed().as_secs());
-                                        last_log_time = std::time::Instant::now();
+        
+        // First, check if mod is already downloaded (race condition protection)
+        if let Ok(metadata) = fs::metadata(&mod_download_path) {
+            if metadata.is_dir() {
+                if let Ok(entries) = fs::read_dir(&mod_download_path) {
+                    if entries.take(1).count() > 0 {
+                        return Self::create_downloaded_mod_result(mod_download_path, mod_id, app);
+                    }
+                }
+            }
+        }
+        
+        // Get parent directory to watch (the workshop content folder)
+        let watch_path = mod_download_path.parent()
+            .ok_or_else(|| "Cannot get parent directory for watching".to_string())?;
+        
+        // Create channel for file system events
+        let (tx, rx) = mpsc::channel();
+        let rx_shared = Arc::new(Mutex::new(rx));
+        
+        // Create watcher with minimal delay for faster detection
+        let mut watcher: RecommendedWatcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
+            if let Ok(event) = res {
+                let _ = tx.send(event);
+            }
+        })
+        .map_err(|e| format!("Failed to create file system watcher: {}", e))?;
+        
+        // Watch the parent directory (non-recursive, we only care about direct children)
+        watcher.watch(watch_path, RecursiveMode::NonRecursive)
+            .map_err(|e| format!("Failed to watch directory: {}", e))?;
+        
+        // Spawn a task to handle file system events
+        let mod_download_path_clone = mod_download_path.clone();
+        let mod_id_clone = mod_id.clone();
+        let app_clone = app.clone();
+        let rx_for_task = rx_shared.clone();
+        let watch_task = tokio::spawn(async move {
+            loop {
+                // Check for timeout
+                if start_time.elapsed() > timeout {
+                    return Ok(None);
+                }
+                
+                // Receive file system event with timeout using spawn_blocking
+                let rx_clone = rx_for_task.clone();
+                let event_result = tokio::task::spawn_blocking(move || {
+                    let rx_guard = rx_clone.lock().unwrap();
+                    rx_guard.recv_timeout(Duration::from_secs(2))
+                }).await;
+                
+                match event_result {
+                    Ok(Ok(event)) => {
+                        // Check if the event is related to our mod folder
+                        if event.paths.iter().any(|p: &PathBuf| p == &mod_download_path_clone || 
+                            p.parent() == Some(&mod_download_path_clone)) {
+                            
+                            // Check if mod folder exists and has content
+                            if let Ok(metadata) = fs::metadata(&mod_download_path_clone) {
+                                if metadata.is_dir() {
+                                    if let Ok(entries) = fs::read_dir(&mod_download_path_clone) {
+                                        if entries.take(1).count() > 0 {
+                                            return Self::create_downloaded_mod_result(
+                                                mod_download_path_clone, 
+                                                mod_id_clone, 
+                                                app_clone
+                                            );
+                                        }
                                     }
                                 }
                             }
-                            Err(e) => {
-                                if last_log_time.elapsed() >= log_interval {
-                                    eprintln!("[Downloader] Error reading mod {} directory: {} ({:.0}s elapsed)", mod_id, e, start_time.elapsed().as_secs());
-                                    last_log_time = std::time::Instant::now();
+                        }
+                    }
+                    Ok(Err(mpsc::RecvTimeoutError::Timeout)) => {
+                        // Timeout - check if mod exists anyway (fallback polling)
+                        if let Ok(metadata) = fs::metadata(&mod_download_path_clone) {
+                            if metadata.is_dir() {
+                                if let Ok(entries) = fs::read_dir(&mod_download_path_clone) {
+                                    if entries.take(1).count() > 0 {
+                                        return Self::create_downloaded_mod_result(
+                                            mod_download_path_clone, 
+                                            mod_id_clone, 
+                                            app_clone
+                                        );
+                                    }
                                 }
                             }
                         }
-                    } else {
-                        if last_log_time.elapsed() >= log_interval {
-                            eprintln!("[Downloader] Mod {} path exists but is not a directory ({:.0}s elapsed)", mod_id, start_time.elapsed().as_secs());
-                            last_log_time = std::time::Instant::now();
+                    }
+                    Ok(Err(mpsc::RecvTimeoutError::Disconnected)) => {
+                        // Channel closed, watcher stopped
+                        break;
+                    }
+                    Err(_) => {
+                        // Task join error
+                        break;
+                    }
+                }
+            }
+            
+            // Final check before timeout
+            if let Ok(metadata) = fs::metadata(&mod_download_path_clone) {
+                if metadata.is_dir() {
+                    if let Ok(entries) = fs::read_dir(&mod_download_path_clone) {
+                        if entries.take(1).count() > 0 {
+                            return Self::create_downloaded_mod_result(
+                                mod_download_path_clone, 
+                                mod_id_clone, 
+                                app_clone
+                            );
                         }
                     }
                 }
-                Err(_) => {
-                    // Path doesn't exist yet
-                    if last_log_time.elapsed() >= log_interval {
-                        eprintln!("[Downloader] Waiting for mod {} to appear at {:?} ({:.0}s elapsed)", mod_id, mod_download_path, start_time.elapsed().as_secs());
-                        last_log_time = std::time::Instant::now();
+            }
+            
+            Ok(None)
+        });
+        
+        // Wait for either the watch task to complete or timeout
+        let result = tokio::time::timeout(timeout, watch_task).await;
+        
+        // Clean up watcher
+        drop(watcher);
+        
+        match result {
+            Ok(Ok(mod_result)) => mod_result,
+            Ok(Err(e)) => Err(format!("Watch task error: {}", e)),
+            Err(_) => {
+                // Timeout - final check
+                if let Ok(metadata) = fs::metadata(&mod_download_path) {
+                    if metadata.is_dir() {
+                        if let Ok(entries) = fs::read_dir(&mod_download_path) {
+                            if entries.take(1).count() > 0 {
+                                return Self::create_downloaded_mod_result(mod_download_path, mod_id, app);
+                            }
+                        }
                     }
                 }
+                Ok(None)
             }
-
-            // Check timeout
-            if start_time.elapsed() > timeout {
-                eprintln!("[Downloader] Timeout waiting for mod {} to download at {:?} (waited {:.0}s)", mod_id, mod_download_path, timeout.as_secs());
-                return Ok(None);
-            }
-
-            sleep(check_interval).await;
         }
+    }
+    
+    /// Helper function to create DownloadedMod result and emit event
+    fn create_downloaded_mod_result(
+        mod_download_path: PathBuf,
+        mod_id: String,
+        app: Option<AppHandle>,
+    ) -> Result<Option<DownloadedMod>, String> {
+        let folder = mod_download_path.file_name()
+            .and_then(|n| n.to_str())
+            .map(|s| s.to_string());
+        
+        // Emit event for downloaded mod
+        if let Some(app_handle) = &app {
+            let _ = app_handle.emit("mod-downloaded", serde_json::json!({
+                "modId": mod_id,
+            }));
+        }
+        
+        Ok(Some(DownloadedMod {
+            mod_id: mod_id.clone(),
+            mod_path: mod_download_path,
+            folder,
+        }))
     }
 
     /// Check if a mod is currently being downloaded

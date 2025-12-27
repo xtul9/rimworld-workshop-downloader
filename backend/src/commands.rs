@@ -1,12 +1,14 @@
 use crate::backend::{
-    mod_query::{query_mods_for_updates, BaseMod},
+    mod_query::{query_mods_for_updates, BaseMod, update_mod_details as update_mod_details_query},
     mod_updater::ModUpdater,
     downloader::Downloader,
     steam_api::SteamApi,
 };
+use crate::backend::mod_query::list_installed_mods as list_installed_mods_query;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use tokio::sync::Mutex;
+use tauri::{AppHandle, Emitter};
 
 // Shared instances for stateful services
 static STEAM_API: OnceLock<Arc<Mutex<SteamApi>>> = OnceLock::new();
@@ -45,9 +47,41 @@ pub async fn query_mods(
         .map_err(|e| format!("Failed to query mods: {}", e))
 }
 
+/// List all installed mods in mods folder (fast version - returns immediately with local data only)
+#[tauri::command]
+pub async fn list_installed_mods(
+    mods_path: String,
+) -> Result<Vec<BaseMod>, String> {
+    let path = PathBuf::from(&mods_path);
+    
+    if !path.exists() {
+        return Err(format!("Mods path does not exist: {}", mods_path));
+    }
+    
+    if !path.is_dir() {
+        return Err(format!("Mods path is not a directory: {}", mods_path));
+    }
+    
+    list_installed_mods_query(&path)
+        .await
+        .map_err(|e| format!("Failed to list installed mods: {}", e))
+}
+
+/// Update mod details from Steam API in background
+/// This should be called after list_installed_mods to fetch details from API
+#[tauri::command]
+pub async fn update_mod_details(
+    mods: Vec<BaseMod>,
+) -> Result<Vec<BaseMod>, String> {
+    update_mod_details_query(mods)
+        .await
+        .map_err(|e| format!("Failed to update mod details: {}", e))
+}
+
 /// Update mods
 #[tauri::command]
 pub async fn update_mods(
+    app: AppHandle,
     mods: Vec<BaseMod>,
     backup_mods: bool,
     backup_directory: Option<String>,
@@ -66,13 +100,27 @@ pub async fn update_mods(
     // Prepare mods for download
     let mod_ids: Vec<String> = mods.iter().map(|m| m.mod_id.clone()).collect();
     
-    // Download mods
+    // Build mod sizes map for load balancing
+    let mod_sizes: std::collections::HashMap<String, u64> = mods
+        .iter()
+        .filter_map(|m| {
+            m.details.as_ref().map(|d| (m.mod_id.clone(), d.file_size))
+        })
+        .collect();
+    
+    // Download mods with size information for load balancing
     let downloader = get_downloader();
     let (downloaded_mods, download_path) = {
         let mut dl = downloader.lock().await;
         let download_path = dl.download_path().clone();
-        let downloaded_mods = dl.download_mods(&mod_ids).await
-            .map_err(|e| format!("Failed to download mods: {}", e))?;
+        let downloaded_mods = if mod_sizes.is_empty() {
+            // No size information available, use simple download
+            dl.download_mods(&mod_ids, Some(&app)).await
+        } else {
+            // Use size-based load balancing
+            dl.download_mods_with_sizes(&mod_ids, Some(&mod_sizes), Some(&app)).await
+        }
+        .map_err(|e| format!("Failed to download mods: {}", e))?;
         (downloaded_mods, download_path)
     };
     
@@ -109,6 +157,7 @@ pub async fn update_mods(
         let download_path_clone = download_path.clone();
         let mods_path_clone = mods_path.clone();
         let backup_dir_clone = backup_directory.as_ref().map(|s| PathBuf::from(s));
+        let app_clone = app.clone();
         
         // Spawn update task for each mod
         let future = async move {
@@ -157,10 +206,24 @@ pub async fn update_mods(
                     // Wait for all .lastupdated files to be written
                     futures::future::join_all(update_file_futures).await;
                     
+                    // Emit event for successfully updated mod
+                    let _ = app_clone.emit("mod-updated", serde_json::json!({
+                        "modId": mod_id,
+                        "success": true,
+                    }));
+                    
                     (mod_id, Ok(updated_path))
                 }
                 Err(e) => {
                     eprintln!("[UPDATE_MODS] Error updating mod {}: {}", mod_id, e);
+                    
+                    // Emit event for failed mod update
+                    let _ = app_clone.emit("mod-updated", serde_json::json!({
+                        "modId": mod_id,
+                        "success": false,
+                        "error": e.to_string(),
+                    }));
+                    
                     (mod_id, Err(e))
                 }
             }
@@ -491,7 +554,7 @@ pub async fn restore_backups(
     Ok(serde_json::Value::Object(result_map))
 }
 
-/// Ignore this update - update .lastupdated file with current remote timestamp (optimized)
+/// Ignore this update - create .ignoredupdate file with current remote timestamp (optimized)
 #[tauri::command]
 pub async fn ignore_update(
     mods: Vec<BaseMod>,
@@ -499,8 +562,6 @@ pub async fn ignore_update(
     if mods.is_empty() {
         return Ok(vec![]);
     }
-    
-    let steam_api = get_steam_api();
     
     // Separate mods with and without details
     let mut mods_with_details = Vec::new();
@@ -518,38 +579,69 @@ pub async fn ignore_update(
     let mut mod_id_to_time_updated: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
     if !mods_without_details.is_empty() {
         let mod_ids: Vec<String> = mods_without_details.iter().map(|m| m.mod_id.clone()).collect();
-        let mut api = steam_api.lock().await;
         
-        // Query in batches of 50
+        // Query in batches of 50 in parallel
         const BATCH_SIZE: usize = 50;
-        for i in (0..mod_ids.len()).step_by(BATCH_SIZE) {
-            let batch_end = std::cmp::min(i + BATCH_SIZE, mod_ids.len());
-            let batch = &mod_ids[i..batch_end];
+        let mut batch_futures = Vec::new();
+        
+        for batch_idx in 0..(mod_ids.len() + BATCH_SIZE - 1) / BATCH_SIZE {
+            let start = batch_idx * BATCH_SIZE;
+            let end = std::cmp::min(start + BATCH_SIZE, mod_ids.len());
+            let batch: Vec<String> = mod_ids[start..end].iter().cloned().collect();
+            let api_clone = get_steam_api();
             
-            // Use query_mod_batch for efficient batch querying
-            match crate::backend::mod_query::query_mod_batch(batch, 0).await {
-                Ok(details) => {
-                    for detail in details {
-                        mod_id_to_time_updated.insert(detail.publishedfileid, detail.time_updated);
-                    }
+            let future = async move {
+                // Small delay to stagger requests
+                if batch_idx > 0 {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(100 * batch_idx as u64)).await;
                 }
-                Err(_) => {
-                    // If batch query fails, fall back to individual queries
-                    for mod_id in batch {
-                        match api.get_file_details(mod_id).await {
-                            Ok(details) => {
-                                mod_id_to_time_updated.insert(mod_id.clone(), details.time_updated);
-                            }
-                            Err(_) => {
-                                // Fallback to current time
-                                let current_time = std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap()
-                                    .as_secs() as i64;
-                                mod_id_to_time_updated.insert(mod_id.clone(), current_time);
+                
+                // Use query_mod_batch for efficient batch querying
+                match crate::backend::mod_query::query_mod_batch(&batch, 0).await {
+                    Ok(details) => {
+                        let mut result = std::collections::HashMap::new();
+                        for detail in details {
+                            result.insert(detail.publishedfileid, detail.time_updated);
+                        }
+                        Ok(result)
+                    }
+                    Err(_) => {
+                        // If batch query fails, fall back to individual queries sequentially
+                        // (API lock prevents parallel access)
+                        let mut api = api_clone.lock().await;
+                        let mut result = std::collections::HashMap::new();
+                        
+                        for mod_id in batch {
+                            match api.get_file_details(&mod_id).await {
+                                Ok(details) => {
+                                    result.insert(mod_id, details.time_updated);
+                                }
+                                Err(_) => {
+                                    // Fallback to current time
+                                    let current_time = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap()
+                                        .as_secs() as i64;
+                                    result.insert(mod_id, current_time);
+                                }
                             }
                         }
+                        Ok(result)
                     }
+                }
+            };
+            batch_futures.push(future);
+        }
+        
+        // Wait for all batches in parallel
+        let batch_results: Vec<Result<std::collections::HashMap<String, i64>, Box<dyn std::error::Error + Send + Sync>>> = futures::future::join_all(batch_futures).await;
+        for result in batch_results {
+            match result {
+                Ok(batch_map) => {
+                    mod_id_to_time_updated.extend(batch_map);
+                }
+                Err(_) => {
+                    // Batch failed, skip it
                 }
             }
         }
@@ -572,11 +664,11 @@ pub async fn ignore_update(
             .await
             .unwrap_or_default();
         
-        // Update .lastupdated files in parallel
+        // Create .ignoredupdate files in parallel
         let mut file_futures = Vec::new();
         for folder_path in all_mod_folders {
             let about_path = folder_path.join("About");
-            let last_updated_path = about_path.join(".lastupdated");
+            let ignore_update_path = about_path.join(".ignoredupdate");
             let time_str = time_updated.to_string();
             
             let future = tokio::task::spawn_blocking(move || {
@@ -584,8 +676,8 @@ pub async fn ignore_update(
                     eprintln!("Failed to create About directory: {}", e);
                     return;
                 }
-                if let Err(e) = std::fs::write(&last_updated_path, time_str) {
-                    eprintln!("Failed to write .lastupdated file: {}", e);
+                if let Err(e) = std::fs::write(&ignore_update_path, time_str) {
+                    eprintln!("Failed to write .ignoredupdate file: {}", e);
                 }
             });
             file_futures.push(future);
@@ -638,6 +730,118 @@ pub async fn ignore_update(
     }
     
     Ok(ignored_mods)
+}
+
+/// Check if mods have .ignoredupdate file (ignored updates)
+#[tauri::command]
+pub async fn check_ignored_updates(
+    mod_paths: Vec<String>,
+) -> Result<serde_json::Value, String> {
+    if mod_paths.is_empty() {
+        return Ok(serde_json::json!({}));
+    }
+    
+    // Check all mods in parallel
+    let mut check_futures = Vec::new();
+    
+    for mod_path in mod_paths {
+        let mod_path_buf = PathBuf::from(&mod_path);
+        let about_path = mod_path_buf.join("About");
+        let ignore_update_path = about_path.join(".ignoredupdate");
+        let mod_path_clone = mod_path.clone();
+        
+        // Spawn blocking task for each check
+        let future = tokio::task::spawn_blocking(move || {
+            ignore_update_path.exists()
+        });
+        
+        check_futures.push((mod_path_clone, future));
+    }
+    
+    // Wait for all checks to complete and build result map
+    let mut results = serde_json::Map::new();
+    for (mod_path, future) in check_futures {
+        match future.await {
+            Ok(has_ignored) => {
+                results.insert(mod_path, serde_json::json!({
+                    "hasIgnoredUpdate": has_ignored
+                }));
+            }
+            Err(_) => {
+                results.insert(mod_path, serde_json::json!({
+                    "hasIgnoredUpdate": false
+                }));
+            }
+        }
+    }
+    
+    Ok(serde_json::Value::Object(results))
+}
+
+/// Undo ignore this update - remove .ignoredupdate file to allow updates again
+#[tauri::command]
+pub async fn undo_ignore_update(
+    mods: Vec<BaseMod>,
+) -> Result<Vec<serde_json::Value>, String> {
+    if mods.is_empty() {
+        return Ok(vec![]);
+    }
+    
+    // Process all mods in parallel
+    let mut undo_futures = Vec::new();
+    
+    for mod_ref in mods {
+        let mod_id = mod_ref.mod_id.clone();
+        let mod_path = PathBuf::from(&mod_ref.mod_path);
+        let mods_path = mod_path.parent()
+            .ok_or_else(|| "Cannot get mods path".to_string())?;
+        
+        let mod_id_clone = mod_id.clone();
+        let mods_path_clone = mods_path.to_path_buf();
+        
+        // Spawn task to remove .ignoredupdate files
+        let future = async move {
+            let all_mod_folders = find_all_mod_folders_with_id(&mods_path_clone, &mod_id_clone)
+                .await
+                .unwrap_or_default();
+            
+            // Remove .ignoredupdate files in parallel
+            let mut file_futures = Vec::new();
+            for folder_path in all_mod_folders {
+                let about_path = folder_path.join("About");
+                let ignore_update_path = about_path.join(".ignoredupdate");
+                
+                let future = tokio::task::spawn_blocking(move || {
+                    if ignore_update_path.exists() {
+                        if let Err(e) = std::fs::remove_file(&ignore_update_path) {
+                            eprintln!("Failed to remove .ignoredupdate file: {}", e);
+                        }
+                    }
+                });
+                file_futures.push(future);
+            }
+            
+            futures::future::join_all(file_futures).await;
+            mod_id_clone
+        };
+        
+        undo_futures.push((mod_id, future));
+    }
+    
+    // Wait for all undo operations to complete
+    let results = futures::future::join_all(undo_futures.into_iter().map(|(mod_id, future)| async move {
+        (mod_id, future.await)
+    })).await;
+    
+    let mut undone_mods = Vec::new();
+    for (mod_id, _) in results {
+        undone_mods.push(serde_json::json!({
+            "modId": mod_id,
+            "undone": true
+        }));
+    }
+    
+    Ok(undone_mods)
 }
 
 /// Get file details from Steam Workshop (optimized - uses batch query internally)
@@ -806,33 +1010,46 @@ pub async fn is_collection_batch(
         .cloned()
         .collect();
     
-    // Query details in batches of 50
+    // Query details in batches of 50 in parallel
     const BATCH_SIZE: usize = 50;
-    let mut all_details = Vec::new();
+    let mut batch_futures = Vec::new();
     
-    for i in (0..unique_ids.len()).step_by(BATCH_SIZE) {
-        let batch_end = std::cmp::min(i + BATCH_SIZE, unique_ids.len());
-        let batch = &unique_ids[i..batch_end];
+    for batch_idx in 0..(unique_ids.len() + BATCH_SIZE - 1) / BATCH_SIZE {
+        let start = batch_idx * BATCH_SIZE;
+        let end = std::cmp::min(start + BATCH_SIZE, unique_ids.len());
+        let batch: Vec<String> = unique_ids[start..end].iter().cloned().collect();
+        let steam_api = get_steam_api();
         
-        match crate::backend::mod_query::query_mod_batch(batch, 0).await {
-            Ok(mut details) => {
-                all_details.append(&mut details);
+        let future = async move {
+            // Small delay to stagger requests
+            if batch_idx > 0 {
+                tokio::time::sleep(tokio::time::Duration::from_millis(100 * batch_idx as u64)).await;
             }
-            Err(_) => {
-                // If batch query fails, try individual queries with cache
-                let steam_api = get_steam_api();
-                for mod_id in batch {
+            
+            match crate::backend::mod_query::query_mod_batch(&batch, 0).await {
+                Ok(details) => Ok(details),
+                Err(_) => {
+                    // If batch query fails, try individual queries with cache
                     let mut api = steam_api.lock().await;
-                    if let Ok(detail) = api.get_file_details(mod_id).await {
-                        all_details.push(detail);
+                    let mut fallback_details = Vec::new();
+                    for mod_id in &batch {
+                        if let Ok(detail) = api.get_file_details(mod_id).await {
+                            fallback_details.push(detail);
+                        }
                     }
+                    Ok(fallback_details)
                 }
             }
-        }
-        
-        // Small delay between batches to avoid rate limiting
-        if i + BATCH_SIZE < unique_ids.len() {
-            tokio::time::sleep(tokio::time::Duration::from_millis(250)).await;
+        };
+        batch_futures.push(future);
+    }
+    
+    // Wait for all batches in parallel
+    let batch_results: Vec<Result<Vec<crate::backend::mod_query::WorkshopFileDetails>, Box<dyn std::error::Error + Send + Sync>>> = futures::future::join_all(batch_futures).await;
+    let mut all_details = Vec::new();
+    for result in batch_results {
+        if let Ok(mut details) = result {
+            all_details.append(&mut details);
         }
     }
     
@@ -997,7 +1214,7 @@ pub async fn download_mod(
     let mod_id_for_download = mod_id.clone();
     let downloader_for_download = get_downloader();
     let mut dl_guard = downloader_for_download.lock().await;
-    let downloaded_mods_result = dl_guard.download_mods(&[mod_id_for_download]).await;
+    let downloaded_mods_result = dl_guard.download_mods(&[mod_id_for_download], None).await;
     drop(dl_guard); // Release lock before await
     
     let downloaded_mods = match downloaded_mods_result {

@@ -93,7 +93,7 @@ export default function ContextMenu() {
   }
 
   const handleAction = async (item: ContextMenuItem) => {
-    if (item.disabled || item.separator || !item.action) {
+    if (item.disabled === true || item.separator || !item.action) {
       return;
     }
 

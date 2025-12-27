@@ -1,6 +1,6 @@
 import { createContext, useContext, useState, ReactNode, useCallback } from "react";
 
-export type ModalType = "restore-backup" | null;
+export type ModalType = "restore-backup" | "force-update-all" | null;
 
 interface ModalContextType {
   openModal: (type: ModalType, data?: any) => void;

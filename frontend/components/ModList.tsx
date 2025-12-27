@@ -3,6 +3,7 @@ import { FixedSizeList as List } from "react-window";
 import { openUrl, revealItemInDir, openPath } from "@tauri-apps/plugin-opener";
 import { BaseMod } from "../types";
 import { useMods } from "../contexts/ModsContext";
+import { useInstalledMods } from "../contexts/InstalledModsContext";
 import { useSettings } from "../contexts/SettingsContext";
 import { useModal } from "../contexts/ModalContext";
 import { useContextMenu, ContextMenuItem } from "../contexts/ContextMenuContext";
@@ -13,13 +14,36 @@ import "./ModList.css";
 interface ModListProps {
   onUpdateSelected: (mods: BaseMod[]) => void;
   modsPath: string;
+  useInstalledModsContext?: boolean;
+  filteredMods?: BaseMod[];
 }
 
 // Height of each mod item (including margin-bottom)
 const ITEM_HEIGHT = 80; // 72px min-height + 8px margin-bottom
 
-export default function ModList({ onUpdateSelected, modsPath }: ModListProps) {
-  const { mods, isQuerying, error, updatingMods, hasQueried, ignoreFromList, ignoreThisUpdate, ignorePermanently } = useMods();
+export default function ModList({ onUpdateSelected, modsPath, useInstalledModsContext = false, filteredMods }: ModListProps) {
+  const modsContext = useMods();
+  const installedModsContext = useInstalledMods();
+  
+  // Use the appropriate context based on the prop
+  const context = useInstalledModsContext ? installedModsContext : modsContext;
+  const { 
+    mods: contextMods, 
+    error, 
+    updatingMods,
+    downloadedMods,
+    ignoreFromList, 
+    ignoreThisUpdate, 
+    ignorePermanently 
+  } = context;
+  
+  // Use filtered mods if provided, otherwise use context mods
+  const mods = filteredMods !== undefined ? filteredMods : contextMods;
+  
+  // Handle different property names between contexts
+  const isQuerying = useInstalledModsContext ? installedModsContext.isLoading : modsContext.isQuerying;
+  const hasQueried = useInstalledModsContext ? installedModsContext.hasLoaded : modsContext.hasQueried;
+  const isUpdatingDetails = useInstalledModsContext ? installedModsContext.isUpdatingDetails : false;
   const { settings } = useSettings();
   const { openModal } = useModal();
   const { showContextMenu } = useContextMenu();
@@ -28,6 +52,7 @@ export default function ModList({ onUpdateSelected, modsPath }: ModListProps) {
   const [lastSelectedIndex, setLastSelectedIndex] = useState<number | null>(null);
   const [modBackups, setModBackups] = useState<Map<string, boolean>>(new Map());
   const [backupDates, setBackupDates] = useState<Map<string, Date>>(new Map());
+  const [ignoredUpdates, setIgnoredUpdates] = useState<Map<string, boolean>>(new Map());
   const [listHeight, setListHeight] = useState(600);
   const listContainerRef = useRef<HTMLDivElement>(null);
 
@@ -105,6 +130,52 @@ export default function ModList({ onUpdateSelected, modsPath }: ModListProps) {
     checkBackups();
   }, [checkBackups]);
 
+  // Check if mods have ignored updates
+  const checkIgnoredUpdates = useCallback(async () => {
+    if (mods.length === 0 || !modsPath) {
+      setIgnoredUpdates(new Map());
+      return;
+    }
+
+    try {
+      // Collect all mod paths
+      const modPaths = mods
+        .map(mod => mod.modPath)
+        .filter((path): path is string => Boolean(path));
+      
+      if (modPaths.length === 0) {
+        setIgnoredUpdates(new Map());
+        return;
+      }
+
+      // Call Tauri command to check all ignored updates at once
+      const results = await invoke<Record<string, { hasIgnoredUpdate: boolean }>>("check_ignored_updates", {
+        modPaths
+      });
+
+      // Build map from results
+      const ignoredMap = new Map<string, boolean>();
+      
+      // Match results to mods by modPath
+      mods.forEach(mod => {
+        if (mod.modPath && results[mod.modPath]) {
+          const data = results[mod.modPath];
+          ignoredMap.set(mod.modId, data.hasIgnoredUpdate);
+        }
+      });
+      
+      setIgnoredUpdates(ignoredMap);
+    } catch (error) {
+      console.warn("Failed to check ignored updates:", error);
+      setIgnoredUpdates(new Map());
+    }
+  }, [mods, modsPath]);
+
+  // Check ignored updates
+  useEffect(() => {
+    checkIgnoredUpdates();
+  }, [checkIgnoredUpdates]);
+
   const handleSelectMod = useCallback((modId: string, ctrlKey: boolean, shiftKey: boolean, index: number) => {
     setSelectedMods(prev => {
       const newSet = new Set(prev);
@@ -151,22 +222,44 @@ export default function ModList({ onUpdateSelected, modsPath }: ModListProps) {
     const selected = mods.filter(m => selectedMods.has(m.modId));
     const hasBackup = modBackups.get(mod.modId) || false;
     const canRestoreBackup = mod.modPath && settings.backupDirectory && hasBackup;
+    const hasIgnoredUpdate = ignoredUpdates.get(mod.modId) || false;
+    // Check if mod has details - details can be undefined, null, or empty object
+    // A mod has valid details if details exists and has a title (which means it was successfully fetched)
+    const hasModDetails = Boolean(mod.details?.title);
+    // For multiple mods, check if all selected mods (including the clicked one if selected) have details
+    const modsToCheck = selected.length > 1 ? selected : [mod];
+    const allModsHaveDetails = modsToCheck.every(m => Boolean(m.details?.title));
     
     const items: ContextMenuItem[] = [];
     
     if (selected.length > 1) {
       // Multiple mods selected
       items.push(
-        { label: "Update selected mods", action: "update" },
-        { separator: true },
-        { label: "Hide for now", action: "ignore-from-list" },
-        { label: "Ignore this update", action: "ignore-this-update" },
+        { 
+          label: useInstalledModsContext ? "Force update selected mods" : "Update selected mods", 
+          action: "update",
+          disabled: !allModsHaveDetails
+        },
+        { separator: true }
+      );
+      
+      // Only show "Hide for now" in Query & Update tab
+      if (!useInstalledModsContext) {
+        items.push({ label: "Hide for now", action: "ignore-from-list" });        
+        items.push({ label: "Ignore this update", action: "ignore-this-update" });
+      }
+      
+      items.push(
         { label: "Ignore mods completely", action: "ignore-permanently" }
       );
     } else {
       // Single mod
       items.push(
-        { label: "Update", action: "update" },
+        { 
+          label: useInstalledModsContext ? "Force update" : "Update", 
+          action: "update",
+          disabled: !hasModDetails
+        },
         { 
           label: hasBackup ? "Restore Backup" : "No backup available", 
           action: "restore-backup",
@@ -176,11 +269,23 @@ export default function ModList({ onUpdateSelected, modsPath }: ModListProps) {
         { label: "Open mod folder", action: "open-folder" },
         { label: "Open workshop page", action: "open-workshop" },
         { label: "Open changelog page", action: "open-changelog" },
-        { separator: true },
-        { label: "Hide for now", action: "ignore-from-list" },
-        { label: "Ignore this update", action: "ignore-this-update" },
+        { separator: true }
+      );
+      
+      // Only show "Hide for now" in Query & Update tab
+      if (!useInstalledModsContext) {
+        items.push({ label: "Hide for now", action: "ignore-from-list" });
+        items.push({ label: "Ignore this update", action: "ignore-this-update" });
+      }
+      
+      items.push(
         { label: "Ignore mod completely", action: "ignore-permanently" }
       );
+      
+      // Add undo option if mod has ignored update
+      if (hasIgnoredUpdate) {
+        items.push({ label: "Undo ignore this update", action: "undo-ignore-update" });
+      }
     }
     
     showContextMenu(
@@ -189,7 +294,7 @@ export default function ModList({ onUpdateSelected, modsPath }: ModListProps) {
       items,
       handleContextAction
     );
-  }, [mods, selectedMods, modBackups, settings.backupDirectory, showContextMenu]);
+  }, [mods, selectedMods, modBackups, ignoredUpdates, settings.backupDirectory, showContextMenu, useInstalledModsContext]);
 
   const handleContextAction = useCallback(async (action: string, data: { mod: BaseMod; selected: BaseMod[] }) => {
     const { mod, selected } = data;
@@ -285,8 +390,20 @@ export default function ModList({ onUpdateSelected, modsPath }: ModListProps) {
           await ignorePermanently([mod]);
         }
         break;
+      case "undo-ignore-update":
+        try {
+          await invoke("undo_ignore_update", {
+            mods: [mod]
+          });
+          // Refresh ignored updates check
+          await checkIgnoredUpdates();
+        } catch (error) {
+          console.error("Failed to undo ignore update:", error);
+          alert(`Failed to undo ignore update: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        break;
     }
-  }, [mods, modBackups, backupDates, settings, openModal, checkBackups, onUpdateSelected, ignoreFromList, ignoreThisUpdate, ignorePermanently]);
+  }, [mods, modBackups, backupDates, settings, openModal, checkBackups, checkIgnoredUpdates, onUpdateSelected, ignoreFromList, ignoreThisUpdate, ignorePermanently]);
 
 
   return (
@@ -294,7 +411,9 @@ export default function ModList({ onUpdateSelected, modsPath }: ModListProps) {
       {isQuerying ? (
         <div className="mod-list-loading">
           <div className="loader-spinner"></div>
-          <div className="loader-text">Querying mods for updates...</div>
+          <div className="loader-text">
+            {useInstalledModsContext ? "Loading installed mods..." : "Querying mods for updates..."}
+          </div>
         </div>
       ) : error ? (
         <div className="mod-list-error">
@@ -304,11 +423,13 @@ export default function ModList({ onUpdateSelected, modsPath }: ModListProps) {
       ) : mods.length === 0 ? (
         <div className="mod-list-empty">
           {hasQueried ? (
-            "All mods are up to date"
+            useInstalledModsContext ? "No mods found" : "All mods are up to date"
           ) : (
             <div className="mod-list-empty-content">
               <div className="mod-list-empty-icon">📋</div>
-              <div className="mod-list-empty-title">No mods queried yet</div>
+              <div className="mod-list-empty-title">
+                {useInstalledModsContext ? "No mods loaded yet" : "No mods queried yet"}
+              </div>
               <div className="mod-list-empty-message">
                 {!modsPath ? (
                   <>
@@ -316,7 +437,11 @@ export default function ModList({ onUpdateSelected, modsPath }: ModListProps) {
                   </>
                 ) : (
                   <>
-                    Click the <strong>"Query Mods"</strong> button above to check for mod updates.
+                    {useInstalledModsContext ? (
+                      <>Click the <strong>"Load Installed Mods"</strong> button above to load all installed mods.</>
+                    ) : (
+                      <>Click the <strong>"Query Mods"</strong> button above to check for mod updates.</>
+                    )}
                   </>
                 )}
               </div>
@@ -339,6 +464,7 @@ export default function ModList({ onUpdateSelected, modsPath }: ModListProps) {
             {({ index, style }) => {
               const mod = mods[index];
               const isUpdating = updatingMods.has(mod.modId);
+              const isDownloaded = downloadedMods?.has(mod.modId) || false;
               
               return (
                 <div
@@ -347,33 +473,47 @@ export default function ModList({ onUpdateSelected, modsPath }: ModListProps) {
                     height: `${parseInt(style.height as string) - 8}px`,
                     marginBottom: "8px",
                   }}
-                  className={`mod-item ${selectedMods.has(mod.modId) ? "selected" : ""} ${mod.updated ? "updated" : ""} ${isUpdating ? "updating" : ""}`}
+                  className={`mod-item ${selectedMods.has(mod.modId) ? "selected" : ""} ${mod.updated ? "updated" : ""} ${isUpdating ? "updating" : ""} ${!mod.details ? "no-details" : ""}`}
                   onClick={(e) => !isUpdating && handleSelectMod(mod.modId, e.ctrlKey || e.metaKey, e.shiftKey, index)}
                   onContextMenu={(e) => !isUpdating && handleContextMenu(e, mod)}
                 >
                   {isUpdating ? (
                     <div className="mod-item-updating">
                       <div className="mod-updating-spinner"></div>
-                      <div className="mod-updating-text">Update in progress...</div>
-                      <div className="mod-updating-name">{mod.details?.title || mod.modId}</div>
+                      <div className="mod-updating-text">
+                        {isDownloaded ? "Installing..." : "Downloading..."}
+                      </div>
+                      <div className="mod-updating-name">{mod.details?.title || mod.folder || mod.modId}</div>
                     </div>
                   ) : (
                     <>
                       <div className="mod-item-header">
-                        <span className="mod-name">{mod.details?.title || mod.modId}</span>
-                        {mod.updated && <span className="mod-updated-badge">Updated</span>}
+                        <span className="mod-name">{mod.details?.title || mod.folder || mod.modId}</span>
+                        <div className="mod-badges">
+                          {!mod.details && (
+                            <span 
+                              className="mod-no-info-badge" 
+                              title={isUpdatingDetails 
+                                ? "Mod details are still being fetched from Steam Workshop!" 
+                                : "No mod information available (mod may be banned or unpublished)"}
+                            >
+                              ⚠️ No info
+                            </span>
+                          )}
+                          {mod.updated && <span className="mod-updated-badge">Updated</span>}
+                        </div>
                       </div>
                       <div className="mod-item-details">
                         <div className="mod-detail">
                           <span className="mod-detail-label">ID:</span>
                           <span className="mod-detail-value">{mod.modId}</span>
                         </div>
-                        <div className="mod-detail">
-                          <span className="mod-detail-label">Folder:</span>
-                          <span className="mod-detail-value">{mod.folder || mod.modPath}</span>
-                        </div>
                         {mod.details && (
                           <>
+                            <div className="mod-detail">
+                              <span className="mod-detail-label">Folder:</span>
+                              <span className="mod-detail-value">{mod.folder || mod.modPath}</span>
+                            </div>
                             <div className="mod-detail">
                               <span className="mod-detail-label">Size:</span>
                               <span className="mod-detail-value">{formatSize(mod.details.file_size)}</span>

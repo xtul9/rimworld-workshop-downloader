@@ -21,12 +21,16 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::default().build())
         .invoke_handler(tauri::generate_handler![
             commands::query_mods,
+            commands::list_installed_mods,
+            commands::update_mod_details,
             commands::update_mods,
             commands::check_backup,
             commands::check_backups,
             commands::restore_backup,
             commands::restore_backups,
             commands::ignore_update,
+            commands::undo_ignore_update,
+            commands::check_ignored_updates,
             commands::get_file_details,
             commands::get_file_details_batch,
             commands::is_collection,

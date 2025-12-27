@@ -38,7 +38,7 @@ export default function RestoreBackupModal({ mod, backupDate, onRestoreComplete,
         backupDirectory: settings.backupDirectory
       });
       
-      setRestoreSuccess(`Backup restored successfully for "${mod.details?.title || mod.modId}"`);
+      setRestoreSuccess(`Backup restored successfully for "${mod.details?.title || mod.folder || mod.modId}"`);
       
       // Call onRestoreComplete callback if provided
       if (onRestoreComplete) {
@@ -90,7 +90,7 @@ export default function RestoreBackupModal({ mod, backupDate, onRestoreComplete,
           ) : (
             <>
               <p>
-                Are you sure you want to restore the backup for <strong>"{mod.details?.title || mod.modId}"</strong>?
+                Are you sure you want to restore the backup for <strong>"{mod.details?.title || mod.folder || mod.modId}"</strong>?
               </p>
               {backupDate && (
                 <p className="restore-backup-date">

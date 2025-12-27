@@ -17,6 +17,8 @@ export interface AppSettings {
   theme: Theme;
   isFirstRun: boolean;
   ignoredMods: IgnoredMod[]; // Array of mod IDs and titles that should be permanently ignored
+  installedModsSortBy?: "date" | "name"; // Sort preference for installed mods tab
+  installedModsSortOrder?: "desc" | "asc"; // Sort order preference for installed mods tab
   // Add more settings here in the future
   [key: string]: any;
 }
@@ -28,6 +30,8 @@ const defaultSettings: AppSettings = {
   theme: "system",
   isFirstRun: true,
   ignoredMods: [],
+  installedModsSortBy: "date",
+  installedModsSortOrder: "desc",
 };
 
 // Initialize store instance

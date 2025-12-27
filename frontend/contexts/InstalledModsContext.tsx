@@ -4,16 +4,17 @@ import { listen } from "@tauri-apps/api/event";
 import { BaseMod } from "../types";
 import { useSettings } from "./SettingsContext";
 
-interface ModsContextType {
+interface InstalledModsContextType {
   mods: BaseMod[];
   setMods: (mods: BaseMod[] | ((prev: BaseMod[]) => BaseMod[])) => void;
-  isQuerying: boolean;
+  isLoading: boolean;
   isUpdating: boolean;
+  isUpdatingDetails: boolean;
   error: string | null;
   updatingMods: Set<string>;
   downloadedMods: Set<string>;
-  hasQueried: boolean;
-  queryMods: (modsPath: string) => Promise<void>;
+  hasLoaded: boolean;
+  loadInstalledMods: (modsPath: string) => Promise<void>;
   updateMods: (modsToUpdate: BaseMod[]) => Promise<void>;
   removeMods: (modsToRemove: BaseMod[]) => void;
   ignoreFromList: (modsToIgnore: BaseMod[]) => void;
@@ -21,17 +22,73 @@ interface ModsContextType {
   ignorePermanently: (modsToIgnore: BaseMod[]) => Promise<void>;
 }
 
-const ModsContext = createContext<ModsContextType | undefined>(undefined);
+const InstalledModsContext = createContext<InstalledModsContextType | undefined>(undefined);
 
-export function ModsProvider({ children }: { children: ReactNode }) {
+export function InstalledModsProvider({ children }: { children: ReactNode }) {
   const [mods, setMods] = useState<BaseMod[]>([]);
-  const [isQuerying, setIsQuerying] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
+  const [isUpdatingDetails, setIsUpdatingDetails] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [updatingMods, setUpdatingMods] = useState<Set<string>>(new Set());
   const [downloadedMods, setDownloadedMods] = useState<Set<string>>(new Set());
-  const [hasQueried, setHasQueried] = useState(false);
+  const [hasLoaded, setHasLoaded] = useState(false);
   const { updateSetting, settings } = useSettings();
+
+  const loadInstalledMods = async (modsPath: string) => {
+    if (isLoading) return;
+    
+    // Validate modsPath before making request
+    if (!modsPath || modsPath.trim().length === 0) {
+      setError("Error loading mods: Mods folder path is not set. Please configure it in Settings.");
+      setIsLoading(false);
+      return;
+    }
+    
+    setIsLoading(true);
+    setError(null);
+    setHasLoaded(false);
+    
+    try {
+      // Call Tauri command to list all installed mods (fast version - returns immediately with local data)
+      const mods = await invoke<BaseMod[]>("list_installed_mods", {
+        modsPath: modsPath
+      });
+      
+      console.log(`[INSTALLED_MODS] Received ${mods.length} mods from Rust backend (fast load)`);
+      
+      // Always update the mods list with new query results (may not have details yet)
+      setMods(mods);
+      setError(null);
+      setHasLoaded(true);
+      
+      // Start updating details in background if there are mods without details
+      if (mods.length > 0 && mods.some(m => !m.details)) {
+        setIsUpdatingDetails(true);
+        
+        // Update details in background (non-blocking)
+        invoke<BaseMod[]>("update_mod_details", { mods })
+          .then((updatedMods) => {
+            console.log(`[INSTALLED_MODS] Updated details for ${updatedMods.length} mods`);
+            setMods(updatedMods);
+            setIsUpdatingDetails(false);
+          })
+          .catch((error) => {
+            console.error("Failed to update mod details:", error);
+            // Don't set error here - mods are already loaded, just without details
+            setIsUpdatingDetails(false);
+          });
+      }
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error("Failed to load installed mods:", error);
+      setError(`Error loading installed mods: ${errorMessage}`);
+      setMods([]);
+      setHasLoaded(false);
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   // Listen for real-time download and update events
   useEffect(() => {
@@ -52,15 +109,20 @@ export function ModsProvider({ children }: { children: ReactNode }) {
         console.log(`[EVENT] Mod updated: ${modId}, success: ${success}`);
         
         if (success) {
-          // Remove mod from list immediately when updated
-          setMods(prev => prev.filter(m => m.modId !== modId));
+          // In Installed Mods tab, mods should stay in the list after update
+          // Just remove from updating set to stop showing progress
           setUpdatingMods(prev => {
             const newSet = new Set(prev);
             newSet.delete(modId);
             return newSet;
           });
+          setDownloadedMods(prev => {
+            const newSet = new Set(prev);
+            newSet.delete(modId);
+            return newSet;
+          });
         } else {
-          // Handle error - keep mod in list but mark as failed
+          // Handle error
           console.error(`[EVENT] Mod update failed: ${modId}, error: ${error}`);
           setUpdatingMods(prev => {
             const newSet = new Set(prev);
@@ -78,48 +140,6 @@ export function ModsProvider({ children }: { children: ReactNode }) {
       unlistenUpdated?.();
     };
   }, []);
-
-  const queryMods = async (modsPath: string) => {
-    if (isQuerying) return;
-    
-    // Validate modsPath before making request
-    if (!modsPath || modsPath.trim().length === 0) {
-      setError("Error querying mods: Mods folder path is not set. Please configure it in Settings.");
-      setIsQuerying(false);
-      return;
-    }
-    
-    setIsQuerying(true);
-    setError(null);
-    setHasQueried(false);
-    
-    try {
-      // Include ignoredMods in query (extract only IDs for backend)
-      const ignoredMods = settings.ignoredMods || [];
-      const ignoredModIds = ignoredMods.map(mod => typeof mod === 'string' ? mod : mod.modId).filter(Boolean); // Support both old format (string[]) and new format (IgnoredMod[])
-      
-      // Call Tauri command instead of fetch
-      const mods = await invoke<BaseMod[]>("query_mods", {
-        modsPath: modsPath,
-        ignoredMods: ignoredModIds
-      });
-      
-      console.log(`[QUERY] Received ${mods.length} mods from Rust backend`);
-      
-      // Always update the mods list with new query results
-      setMods(mods);
-      setError(null);
-      setHasQueried(true);
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      console.error("Failed to query mods:", error);
-      setError(`Error querying mods: ${errorMessage}`);
-      setMods([]);
-      setHasQueried(false);
-    } finally {
-      setIsQuerying(false);
-    }
-  };
 
   const updateMods = async (modsToUpdate: BaseMod[]) => {
     if (modsToUpdate.length === 0) return;
@@ -142,9 +162,8 @@ export function ModsProvider({ children }: { children: ReactNode }) {
       
       console.log(`[UPDATE] Received ${updated.length} updated mod(s) from Rust backend`);
       
-      // Remove any remaining mods that weren't removed by events
-      const updatedModIds = new Set(updated.map((u: BaseMod) => u.modId));
-      setMods(prev => prev.filter(m => !updatedModIds.has(m.modId)));
+      // In Installed Mods tab, mods should stay in the list after update
+      // Events have already removed them from updatingMods set
       
       if (updated.length === 0 && modIdsToUpdate.size > 0) {
         setError('No mods were updated. Check backend logs for details.');
@@ -163,7 +182,7 @@ export function ModsProvider({ children }: { children: ReactNode }) {
   };
 
   const removeMods = (modsToRemove: BaseMod[]) => {
-    setMods(prev => prev.filter(m => !modsToRemove.includes(m)));
+    setMods(prev => prev.filter(m => !modsToRemove.some(removed => removed.modId === m.modId)));
   };
 
   const ignoreFromList = (modsToIgnore: BaseMod[]) => {
@@ -211,8 +230,8 @@ export function ModsProvider({ children }: { children: ReactNode }) {
       
       await updateSetting("ignoredMods", newIgnored);
       
-      // Remove from list after successful ignore
-      setMods(prev => prev.filter(m => !modsToIgnore.some(ignored => ignored.modId === m.modId)));
+      // In Installed Mods tab, mods should stay in the list even after being ignored
+      // They will just be filtered out in Query & Update tab
     } catch (error) {
       console.error("Failed to ignore permanently:", error);
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -221,33 +240,34 @@ export function ModsProvider({ children }: { children: ReactNode }) {
   };
 
   return (
-    <ModsContext.Provider
+    <InstalledModsContext.Provider
       value={{
         mods,
         setMods,
-        isQuerying,
+        isLoading,
         isUpdating,
+        isUpdatingDetails,
         error,
         updatingMods,
-        hasQueried,
-        queryMods,
+        downloadedMods,
+        hasLoaded,
+        loadInstalledMods,
         updateMods,
         removeMods,
         ignoreFromList,
         ignoreThisUpdate,
         ignorePermanently,
-        downloadedMods,
       }}
     >
       {children}
-    </ModsContext.Provider>
+    </InstalledModsContext.Provider>
   );
 }
 
-export function useMods() {
-  const context = useContext(ModsContext);
+export function useInstalledMods() {
+  const context = useContext(InstalledModsContext);
   if (context === undefined) {
-    throw new Error("useMods must be used within a ModsProvider");
+    throw new Error("useInstalledMods must be used within an InstalledModsProvider");
   }
   return context;
 }
