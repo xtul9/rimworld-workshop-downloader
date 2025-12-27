@@ -80,44 +80,23 @@ pub async fn update_mods(
         return Err("Failed to download any mods. Check SteamCMD logs for details.".to_string());
     }
     
-    // Update mods
-    let updater = ModUpdater;
-    let mut updated_mods = Vec::new();
+    // Create HashMap for O(1) lookup instead of O(n) find()
+    let mods_map: std::collections::HashMap<String, &BaseMod> = mods.iter()
+        .map(|m| (m.mod_id.clone(), m))
+        .collect();
+    
+    // Update mods in parallel (different mods can be updated simultaneously)
+    let mut update_futures = Vec::new();
     
     for downloaded_mod in downloaded_mods {
-        eprintln!("[UPDATE_MODS] Processing downloaded mod: {} at {:?}", downloaded_mod.mod_id, downloaded_mod.mod_path);
+        let mod_id = downloaded_mod.mod_id.clone();
+        let mod_path = downloaded_mod.mod_path.clone();
+        let original_mod = mods_map.get(&mod_id)
+            .ok_or_else(|| format!("Original mod not found for {}", mod_id))?;
         
-        let original_mod = mods.iter()
-            .find(|m| m.mod_id == downloaded_mod.mod_id)
-            .ok_or_else(|| format!("Original mod not found for {}", downloaded_mod.mod_id))?;
-        
-        // Get existing folder name from original mod
         let existing_folder_name = original_mod.folder.as_deref();
-        
-        eprintln!("[UPDATE_MODS] Updating mod {} from {:?} to {:?}", downloaded_mod.mod_id, downloaded_mod.mod_path, mods_path);
-        
-        // Get mod title from original mod details
         let mod_title = original_mod.details.as_ref()
             .map(|d| d.title.clone());
-        
-        // Update mod - use downloaded_mod.mod_path directly (it's already the full path)
-        let mod_path = updater.update_mod(
-            &downloaded_mod.mod_id,
-            &downloaded_mod.mod_path,
-            &download_path,
-            &mods_path,
-            existing_folder_name,
-            backup_mods,
-            backup_directory.as_deref().map(PathBuf::from).as_deref(),
-            mod_title.as_deref(),
-        ).await.map_err(|e| {
-            eprintln!("[UPDATE_MODS] Error updating mod {}: {}", downloaded_mod.mod_id, e);
-            format!("Failed to update mod {}: {}", downloaded_mod.mod_id, e)
-        })?;
-        
-        eprintln!("[UPDATE_MODS] Successfully updated mod {} to {:?}", downloaded_mod.mod_id, mod_path);
-        
-        // Get remote update time from original mod details
         let remote_update_time = original_mod.details.as_ref()
             .map(|d| d.time_updated)
             .unwrap_or_else(|| {
@@ -127,34 +106,93 @@ pub async fn update_mods(
                     .as_secs() as i64
             });
         
-        // Find all folders with the same mod ID and update .lastupdated
-        let all_mod_folders = find_all_mod_folders_with_id(mods_path.as_path(), &downloaded_mod.mod_id)
-            .await
-            .unwrap_or_default();
+        let download_path_clone = download_path.clone();
+        let mods_path_clone = mods_path.clone();
+        let backup_dir_clone = backup_directory.as_ref().map(|s| PathBuf::from(s));
         
-        for folder_path in all_mod_folders {
-            let about_path = folder_path.join("About");
-            let last_updated_path = about_path.join(".lastupdated");
+        // Spawn update task for each mod
+        let future = async move {
+            eprintln!("[UPDATE_MODS] Processing downloaded mod: {} at {:?}", mod_id, mod_path);
             
-            if let Err(e) = std::fs::create_dir_all(&about_path) {
-                eprintln!("Failed to create About directory: {}", e);
-                continue;
+            let updater = ModUpdater;
+            let mod_path_result = updater.update_mod(
+                &mod_id,
+                &mod_path,
+                &download_path_clone,
+                &mods_path_clone,
+                existing_folder_name,
+                backup_mods,
+                backup_dir_clone.as_deref(),
+                mod_title.as_deref(),
+            ).await;
+            
+            match mod_path_result {
+                Ok(updated_path) => {
+                    eprintln!("[UPDATE_MODS] Successfully updated mod {} to {:?}", mod_id, updated_path);
+                    
+                    // Find all folders with the same mod ID and update .lastupdated
+                    let all_mod_folders = find_all_mod_folders_with_id(&mods_path_clone, &mod_id)
+                        .await
+                        .unwrap_or_default();
+                    
+                    // Update .lastupdated files in parallel
+                    let mut update_file_futures = Vec::new();
+                    for folder_path in all_mod_folders {
+                        let about_path = folder_path.join("About");
+                        let last_updated_path = about_path.join(".lastupdated");
+                        let time_str = remote_update_time.to_string();
+                        
+                        let future = tokio::task::spawn_blocking(move || {
+                            if let Err(e) = std::fs::create_dir_all(&about_path) {
+                                eprintln!("Failed to create About directory: {}", e);
+                                return;
+                            }
+                            if let Err(e) = std::fs::write(&last_updated_path, time_str) {
+                                eprintln!("Failed to write .lastupdated file: {}", e);
+                            }
+                        });
+                        update_file_futures.push(future);
+                    }
+                    
+                    // Wait for all .lastupdated files to be written
+                    futures::future::join_all(update_file_futures).await;
+                    
+                    (mod_id, Ok(updated_path))
+                }
+                Err(e) => {
+                    eprintln!("[UPDATE_MODS] Error updating mod {}: {}", mod_id, e);
+                    (mod_id, Err(e))
+                }
             }
-            
-            if let Err(e) = std::fs::write(&last_updated_path, remote_update_time.to_string()) {
-                eprintln!("Failed to write .lastupdated file: {}", e);
+        };
+        
+        update_futures.push(future);
+    }
+    
+    // Wait for all updates to complete
+    let results = futures::future::join_all(update_futures).await;
+    let mut updated_mods = Vec::new();
+    
+    for (mod_id, result) in results {
+        match result {
+            Ok(_path) => {
+                // Find the original mod to return
+                if let Some(original_mod) = mods_map.get(&mod_id) {
+                    let mut updated_mod = (*original_mod).clone();
+                    updated_mod.updated = Some(true);
+                    updated_mods.push(updated_mod);
+                }
+            }
+            Err(e) => {
+                eprintln!("[UPDATE_MODS] Failed to update mod {}: {}", mod_id, e);
+                // Still add the mod but mark as not updated
+                if let Some(original_mod) = mods_map.get(&mod_id) {
+                    let mut failed_mod = (*original_mod).clone();
+                    failed_mod.updated = Some(false);
+                    updated_mods.push(failed_mod);
+                }
             }
         }
-        
-        updated_mods.push(BaseMod {
-            mod_id: original_mod.mod_id.clone(),
-            mod_path: mod_path.to_string_lossy().to_string(),
-            folder: mod_path.file_name()
-                .and_then(|n| n.to_str())
-                .map(|s| s.to_string()),
-            details: original_mod.details.clone(),
-            updated: Some(true),
-        });
     }
     
     Ok(updated_mods)

@@ -107,17 +107,21 @@ impl ModUpdater {
                 
                 // Copy current mod to backup directory
                 if mod_destination_path.exists() {
-                    copy_dir_all(&mod_destination_path, &backup_path)
+                    copy_dir_all_async(&mod_destination_path, &backup_path).await
                         .map_err(|e| format!("Failed to create backup: {}", e))?;
                     eprintln!("[ModUpdater] Created backup for mod {} at {:?}", mod_id, backup_path);
                 }
             }
         }
 
-        // Remove existing mod folder if it exists
+        // Remove existing mod folder if it exists (async)
         if mod_destination_path.exists() {
-            fs::remove_dir_all(&mod_destination_path)
-                .map_err(|e| format!("Failed to remove existing mod folder: {}", e))?;
+            let path_to_remove = mod_destination_path.clone();
+            tokio::task::spawn_blocking(move || {
+                fs::remove_dir_all(&path_to_remove)
+            }).await
+            .map_err(|e| format!("Task panicked: {:?}", e))?
+            .map_err(|e| format!("Failed to remove existing mod folder: {}", e))?;
         }
 
         // Copy mod from download folder to game mods folder
@@ -135,7 +139,7 @@ impl ModUpdater {
         }
 
         eprintln!("[ModUpdater] Copying mod from {:?} to {:?}", source_path, mod_destination_path);
-        copy_dir_all(&source_path, &mod_destination_path)
+        copy_dir_all_async(&source_path, &mod_destination_path).await
             .map_err(|e| format!("Failed to copy mod: {}", e))?;
 
         eprintln!("[ModUpdater] Mod {} copied successfully to {:?}", mod_id, mod_destination_path);
@@ -165,8 +169,19 @@ impl ModUpdater {
     }
 }
 
-/// Recursively copy directory
-fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), String> {
+/// Recursively copy directory (async version using spawn_blocking)
+pub async fn copy_dir_all_async(src: &Path, dst: &Path) -> Result<(), String> {
+    let src = src.to_path_buf();
+    let dst = dst.to_path_buf();
+    
+    tokio::task::spawn_blocking(move || {
+        copy_dir_all_sync(&src, &dst)
+    }).await
+    .map_err(|e| format!("Task panicked: {:?}", e))?
+}
+
+/// Recursively copy directory (synchronous version for use in spawn_blocking)
+fn copy_dir_all_sync(src: &Path, dst: &Path) -> Result<(), String> {
     fs::create_dir_all(dst)
         .map_err(|e| format!("Failed to create directory {}: {}", dst.display(), e))?;
     
@@ -178,7 +193,7 @@ fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), String> {
         let dst_path = dst.join(&file_name);
         
         if path.is_dir() {
-            copy_dir_all(&path, &dst_path)?;
+            copy_dir_all_sync(&path, &dst_path)?;
         } else {
             fs::copy(&path, &dst_path)
                 .map_err(|e| format!("Failed to copy {} to {}: {}", path.display(), dst_path.display(), e))?;
