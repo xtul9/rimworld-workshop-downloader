@@ -248,7 +248,9 @@ pub fn run() {
             commands::restore_backups,
             commands::ignore_update,
             commands::get_file_details,
+            commands::get_file_details_batch,
             commands::is_collection,
+            commands::is_collection_batch,
             commands::get_collection_details,
             commands::download_mod,
         ])

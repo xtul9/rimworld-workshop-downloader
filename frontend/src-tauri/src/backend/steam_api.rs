@@ -92,7 +92,7 @@ impl SteamApi {
     }
 
     /// Scrape Steam Workshop page to check if it's a collection
-    async fn scrape_is_collection(&mut self, mod_id: &str) -> Result<bool, Box<dyn std::error::Error>> {
+    pub async fn scrape_is_collection(&mut self, mod_id: &str) -> Result<bool, Box<dyn std::error::Error>> {
         let workshop_url = format!("https://steamcommunity.com/sharedfiles/filedetails/?id={}", mod_id);
         
         let page_html = self.scraping_rate_limiter.execute(|| async {
