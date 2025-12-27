@@ -221,13 +221,23 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
     const hasBackup = modBackups.get(mod.modId) || false;
     const canRestoreBackup = mod.modPath && settings.backupDirectory && hasBackup;
     const hasIgnoredUpdate = ignoredUpdates.get(mod.modId) || false;
+    // Check if mod has details - details can be undefined, null, or empty object
+    // A mod has valid details if details exists and has a title (which means it was successfully fetched)
+    const hasModDetails = Boolean(mod.details?.title);
+    // For multiple mods, check if all selected mods (including the clicked one if selected) have details
+    const modsToCheck = selected.length > 1 ? selected : [mod];
+    const allModsHaveDetails = modsToCheck.every(m => Boolean(m.details?.title));
     
     const items: ContextMenuItem[] = [];
     
     if (selected.length > 1) {
       // Multiple mods selected
       items.push(
-        { label: useInstalledModsContext ? "Force update selected mods" : "Update selected mods", action: "update" },
+        { 
+          label: useInstalledModsContext ? "Force update selected mods" : "Update selected mods", 
+          action: "update",
+          disabled: !allModsHaveDetails
+        },
         { separator: true }
       );
       
@@ -243,7 +253,11 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
     } else {
       // Single mod
       items.push(
-        { label: useInstalledModsContext ? "Force update" : "Update", action: "update" },
+        { 
+          label: useInstalledModsContext ? "Force update" : "Update", 
+          action: "update",
+          disabled: !hasModDetails
+        },
         { 
           label: hasBackup ? "Restore Backup" : "No backup available", 
           action: "restore-backup",
