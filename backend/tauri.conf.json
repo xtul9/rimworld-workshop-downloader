@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "bash -c 'FRONTEND_DIR=\"$(cd \"$(dirname \"$TAURI_DIR\")\" && pwd)/frontend\" && cd \"$FRONTEND_DIR\" && npm run build'",
+    "beforeBuildCommand": "",
     "frontendDist": "../frontend/dist"
   },
   "app": {
