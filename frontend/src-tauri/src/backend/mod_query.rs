@@ -285,6 +285,8 @@ pub async fn query_mods_for_updates(
     mods_path: &Path,
     ignored_mods: &[String],
 ) -> Result<Vec<BaseMod>, Box<dyn std::error::Error>> {
+    // Convert ignored_mods to HashSet for O(1) lookup
+    let ignored_set: std::collections::HashSet<String> = ignored_mods.iter().cloned().collect();
     // Check if mods path exists
     let metadata = std::fs::metadata(mods_path)?;
     if !metadata.is_dir() {
@@ -337,30 +339,48 @@ pub async fn query_mods_for_updates(
     // Query mods in batches of 50
     const BATCH_COUNT: usize = 50;
 
-    // Query all batches sequentially to avoid lifetime issues
-    for i in (0..mods.len()).step_by(BATCH_COUNT) {
-        let batch_end = std::cmp::min(i + BATCH_COUNT, mods.len());
-        let batch = &mods[i..batch_end];
-        let mod_ids: Vec<String> = batch.iter().map(|m| m.mod_id.clone()).collect();
+    // Create batches and query them in parallel (with small delays to avoid rate limiting)
+    let mut batch_futures = Vec::new();
+    let num_batches = (mods.len() + BATCH_COUNT - 1) / BATCH_COUNT;
+    
+    for batch_idx in 0..num_batches {
+        let start = batch_idx * BATCH_COUNT;
+        let end = std::cmp::min(start + BATCH_COUNT, mods.len());
+        let mod_ids: Vec<String> = mods[start..end].iter().map(|m| m.mod_id.clone()).collect();
+        let mod_indices = (start..end).collect::<Vec<usize>>();
         
-        match query_mod_batch(&mod_ids, 0).await {
+        // Add delay between starting batches to avoid rate limiting
+        if batch_idx > 0 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(250 * batch_idx as u64)).await;
+        }
+        
+        // Move mod_ids into the future to avoid lifetime issues
+        let future = async move {
+            query_mod_batch(&mod_ids, 0).await
+        };
+        batch_futures.push((future, mod_indices));
+    }
+    
+    // Wait for all batches and update mods
+    for (batch_future, mod_indices) in batch_futures {
+        match batch_future.await {
             Ok(details) => {
-                for detail in details {
-                    if let Some(mod_ref) = mods[i..batch_end].iter_mut()
-                        .find(|m| m.mod_id == detail.publishedfileid)
-                    {
-                        mod_ref.details = Some(detail);
+                // Create HashMap for O(1) lookup instead of O(n) find()
+                let details_map: std::collections::HashMap<String, WorkshopFileDetails> = details
+                    .into_iter()
+                    .map(|d| (d.publishedfileid.clone(), d))
+                    .collect();
+                
+                // Update mods with details
+                for idx in mod_indices {
+                    if let Some(detail) = details_map.get(&mods[idx].mod_id) {
+                        mods[idx].details = Some(detail.clone());
                     }
                 }
             }
             Err(_e) => {
                 // Failed to query batch, continue with next batch
             }
-        }
-        
-        // Delay between batches to avoid rate limiting
-        if i + BATCH_COUNT < mods.len() {
-            tokio::time::sleep(tokio::time::Duration::from_millis(250)).await;
         }
     }
 
@@ -371,59 +391,68 @@ pub async fn query_mods_for_updates(
     }
 
     // Check which mods have updates available
-    let mut mods_with_updates_map = std::collections::HashMap::new();
-
-    for mod_ref in &mods {
-        let details = match &mod_ref.details {
-            Some(d) => d,
-            None => {
-                continue;
+    // First, filter mods that pass basic validation checks
+    let mods_to_check: Vec<(usize, &BaseMod, &WorkshopFileDetails)> = mods.iter()
+        .enumerate()
+        .filter_map(|(idx, mod_ref)| {
+            let details = mod_ref.details.as_ref()?;
+            
+            // Check for various error conditions
+            if details.result == 9 {
+                return None; // Mod has been removed/unlisted
             }
-        };
+            if details.result != 1 {
+                return None; // Invalid result code
+            }
+            if details.visibility != 0 {
+                return None; // Private file
+            }
+            if details.banned {
+                return None; // Banned file
+            }
+            if details.creator_app_id != 294100 {
+                return None; // Not a Rimworld mod
+            }
+            if ignored_set.contains(&mod_ref.mod_id) {
+                return None; // Ignored mod
+            }
+            
+            Some((idx, mod_ref, details))
+        })
+        .collect();
+    
+    // Check last updated times in parallel using spawn_blocking
+    let mut check_futures = Vec::new();
+    for (_idx, mod_ref, details) in &mods_to_check {
+        let mod_path = PathBuf::from(&mod_ref.mod_path);
+        let time_updated = details.time_updated;
+        let mod_id = mod_ref.mod_id.clone();
         
-        // Check for various error conditions
-        if details.result == 9 {
-            continue; // Mod has been removed/unlisted
-        }
-
-        if details.result != 1 {
-            continue; // Invalid result code
-        }
-
-        if details.visibility != 0 {
-            continue; // Private file
-        }
-
-        // Check if banned
-        if details.banned {
-            continue; // Banned file
-        }
-
-        if details.creator_app_id != 294100 {
-            continue; // Not a Rimworld mod
-        }
-
-        // Compare dates
-        let remote_date = std::time::UNIX_EPOCH + std::time::Duration::from_secs(details.time_updated as u64);
-        let last_updated_date = get_mod_last_updated_time(Path::new(&mod_ref.mod_path))?;
-
-        // Calculate time difference in seconds
-        let time_diff_seconds = remote_date.duration_since(last_updated_date)
-            .unwrap_or_default()
-            .as_secs() as f64;
-        
-        // Consider mod as needing update if remote is at least 1 second newer
-        let needs_update = time_diff_seconds > 1.0;
-
-        // Skip if mod is in ignored list
-        if ignored_mods.contains(&mod_ref.mod_id) {
-            continue;
-        }
-
-        if needs_update {
-            // Only add if we don't already have this modId (avoid duplicates)
-            if !mods_with_updates_map.contains_key(&mod_ref.mod_id) {
-                mods_with_updates_map.insert(mod_ref.mod_id.clone(), mod_ref.clone());
+        let future = tokio::task::spawn_blocking(move || {
+            let remote_date = std::time::UNIX_EPOCH + std::time::Duration::from_secs(time_updated as u64);
+            match get_mod_last_updated_time(&mod_path) {
+                Ok(last_updated_date) => {
+                    let time_diff_seconds = remote_date.duration_since(last_updated_date)
+                        .unwrap_or_default()
+                        .as_secs() as f64;
+                    Some((mod_id, time_diff_seconds > 1.0))
+                }
+                Err(_) => None,
+            }
+        });
+        check_futures.push(future);
+    }
+    
+    // Wait for all checks and collect mods that need updates
+    let mut mods_with_updates_map = std::collections::HashMap::new();
+    let futures_results: Vec<_> = futures::future::join_all(check_futures).await;
+    
+    for (result, (_, mod_ref, _)) in futures_results.into_iter().zip(mods_to_check.iter()) {
+        if let Ok(Some((mod_id, needs_update))) = result {
+            if needs_update {
+                if !mods_with_updates_map.contains_key(&mod_id) {
+                    mods_with_updates_map.insert(mod_id, (*mod_ref).clone());
+                }
             }
         }
     }
