@@ -15,25 +15,29 @@ interface ModListProps {
   onUpdateSelected: (mods: BaseMod[]) => void;
   modsPath: string;
   useInstalledModsContext?: boolean;
+  filteredMods?: BaseMod[];
 }
 
 // Height of each mod item (including margin-bottom)
 const ITEM_HEIGHT = 80; // 72px min-height + 8px margin-bottom
 
-export default function ModList({ onUpdateSelected, modsPath, useInstalledModsContext = false }: ModListProps) {
+export default function ModList({ onUpdateSelected, modsPath, useInstalledModsContext = false, filteredMods }: ModListProps) {
   const modsContext = useMods();
   const installedModsContext = useInstalledMods();
   
   // Use the appropriate context based on the prop
   const context = useInstalledModsContext ? installedModsContext : modsContext;
   const { 
-    mods, 
+    mods: contextMods, 
     error, 
     updatingMods, 
     ignoreFromList, 
     ignoreThisUpdate, 
     ignorePermanently 
   } = context;
+  
+  // Use filtered mods if provided, otherwise use context mods
+  const mods = filteredMods !== undefined ? filteredMods : contextMods;
   
   // Handle different property names between contexts
   const isQuerying = useInstalledModsContext ? installedModsContext.isLoading : modsContext.isQuerying;

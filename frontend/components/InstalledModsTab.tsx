@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState, useMemo } from "react";
 import ModList from "./ModList";
 import { useModsPath } from "../contexts/ModsPathContext";
 import { useInstalledMods } from "../contexts/InstalledModsContext";
@@ -19,6 +19,28 @@ export default function InstalledModsTab() {
   } = useInstalledMods();
   const { formatSize } = useFormatting();
   const { openModal } = useModal();
+  const [searchQuery, setSearchQuery] = useState("");
+
+  // Filter mods based on search query (name, folder, mod ID)
+  const filteredMods = useMemo(() => {
+    if (!searchQuery.trim()) {
+      return mods;
+    }
+
+    const query = searchQuery.toLowerCase().trim();
+    return mods.filter(mod => {
+      // Search by mod name (title)
+      const nameMatch = mod.details?.title?.toLowerCase().includes(query);
+      
+      // Search by folder name
+      const folderMatch = mod.folder?.toLowerCase().includes(query);
+      
+      // Search by mod ID
+      const idMatch = mod.modId.toLowerCase().includes(query);
+      
+      return nameMatch || folderMatch || idMatch;
+    });
+  }, [mods, searchQuery]);
 
   // Auto-load mods when tab is opened (if not already loaded)
   useEffect(() => {
@@ -28,9 +50,9 @@ export default function InstalledModsTab() {
   }, [hasLoaded, isLoading, modsPath, loadInstalledMods]);
 
   const handleForceUpdateAll = () => {
-    if (mods.length === 0) return;
+    if (filteredMods.length === 0) return;
     
-    const modsToUpdate = mods.filter(m => !m.updated);
+    const modsToUpdate = filteredMods.filter(m => !m.updated);
     if (modsToUpdate.length === 0) {
       alert("All mods are already up to date.");
       return;
@@ -63,6 +85,28 @@ export default function InstalledModsTab() {
         </div>
       )}
 
+      {/* Search input */}
+      {hasLoaded && mods.length > 0 && (
+        <div className="search-container">
+          <input
+            type="text"
+            className="search-input"
+            placeholder="Search mods by name, folder, or mod ID..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+          />
+          {searchQuery && (
+            <button
+              className="search-clear-button"
+              onClick={() => setSearchQuery("")}
+              title="Clear search"
+            >
+              ×
+            </button>
+          )}
+        </div>
+      )}
+
       <div className="mods-section">
         <div className="mods-header">
           <span>
@@ -72,7 +116,17 @@ export default function InstalledModsTab() {
               "Error"
             ) : (
               <>
-                {mods.length > 0 ? (
+                {searchQuery ? (
+                  <>
+                    {filteredMods.length > 0 ? (
+                      <>
+                        Found {filteredMods.length} within all {mods.length} mod(s)
+                      </>
+                    ) : (
+                      `No mods found matching "${searchQuery}"`
+                    )}
+                  </>
+                ) : mods.length > 0 ? (
                   <>
                     Installed mods: {mods.length}
                     {mods.filter(m => m.updated).length > 0 && (
@@ -87,14 +141,14 @@ export default function InstalledModsTab() {
               </>
             )}
           </span>
-          {!isLoading && !error && mods.length > 0 && (
+          {!isLoading && !error && filteredMods.length > 0 && (
             <button
               onClick={handleForceUpdateAll}
-              disabled={isLoading || isUpdating || mods.filter(m => !m.updated).length === 0}
+              disabled={isLoading || isUpdating || filteredMods.filter(m => !m.updated).length === 0}
               title="Force update all mods"
               className="force-update-all-button"
             >
-              Force Update All ({mods.filter(m => !m.updated).length})
+              Force Update All ({filteredMods.filter(m => !m.updated).length})
             </button>
           )}
         </div>
@@ -102,6 +156,7 @@ export default function InstalledModsTab() {
           onUpdateSelected={handleUpdateSelected}
           modsPath={modsPath}
           useInstalledModsContext={true}
+          filteredMods={searchQuery ? filteredMods : undefined}
         />
       </div>
     </div>
