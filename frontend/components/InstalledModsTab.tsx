@@ -4,6 +4,7 @@ import { useModsPath } from "../contexts/ModsPathContext";
 import { useInstalledMods } from "../contexts/InstalledModsContext";
 import { useFormatting } from "../hooks/useFormatting";
 import { useModal } from "../contexts/ModalContext";
+import { useSettings } from "../contexts/SettingsContext";
 import Select from "./Select";
 import "./QueryTab.css";
 
@@ -21,9 +22,20 @@ export default function InstalledModsTab() {
   } = useInstalledMods();
   const { formatSize } = useFormatting();
   const { openModal } = useModal();
+  const { settings, updateSetting } = useSettings();
   const [searchQuery, setSearchQuery] = useState("");
-  const [sortBy, setSortBy] = useState<"date" | "name">("date");
-  const [sortOrder, setSortOrder] = useState<"desc" | "asc">("desc");
+  const [sortBy, setSortBy] = useState<"date" | "name">(settings.installedModsSortBy || "date");
+  const [sortOrder, setSortOrder] = useState<"desc" | "asc">(settings.installedModsSortOrder || "desc");
+  
+  // Update state when settings change (e.g., after loading from storage)
+  useEffect(() => {
+    if (settings.installedModsSortBy) {
+      setSortBy(settings.installedModsSortBy);
+    }
+    if (settings.installedModsSortOrder) {
+      setSortOrder(settings.installedModsSortOrder);
+    }
+  }, [settings.installedModsSortBy, settings.installedModsSortOrder]);
 
   // Filter and sort mods
   const filteredAndSortedMods = useMemo(() => {
@@ -133,7 +145,10 @@ export default function InstalledModsTab() {
             <Select<"name" | "date">
               id="sort-by"
               value={sortBy}
-              onChange={(value) => setSortBy(value)}
+              onChange={async (value) => {
+                setSortBy(value);
+                await updateSetting("installedModsSortBy", value);
+              }}
               options={[
                   { value: "date", label: "Update Date" },
                   { value: "name", label: "Name" }
@@ -141,7 +156,11 @@ export default function InstalledModsTab() {
             />
             <button
               className="sort-order-button"
-              onClick={() => setSortOrder(sortOrder === "asc" ? "desc" : "asc")}
+              onClick={async () => {
+                const newOrder = sortOrder === "asc" ? "desc" : "asc";
+                setSortOrder(newOrder);
+                await updateSetting("installedModsSortOrder", newOrder);
+              }}
               title={sortOrder === "asc" ? "Ascending" : "Descending"}
             >
               {sortOrder === "asc" ? "↑" : "↓"}
