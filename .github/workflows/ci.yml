@@ -31,13 +31,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: Setup Node.js (for frontend)
         uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: 'npm'
           cache-dependency-path: |
-            backend/package-lock.json
             frontend/package-lock.json
 
       - name: Setup Rust
@@ -66,43 +65,11 @@ jobs:
         run: |
           brew install openssl
 
-      - name: Install backend dependencies
-        run: |
-          cd backend
-          npm ci
-
-      - name: Build backend TypeScript
-        run: |
-          cd backend
-          npm run build
-
       - name: Download SteamCMD
         run: |
-          cd backend
-          npm run build:steamcmd
-
-      - name: Build backend sidecar binary for current platform (Linux/macOS)
-        if: matrix.platform != 'windows'
-        run: |
-          cd backend
-          npm run build
-          npm run build:bundle
-          if [ "${{ matrix.platform }}" == "linux" ]; then
-            npx pkg dist/bundle.js --targets node22-linux-x64 --output bin/rimworld-workshop-downloader-backend-x86_64-unknown-linux-gnu
-          elif [ "${{ matrix.platform }}" == "macos" ]; then
-            # Build for Apple Silicon (ARM64) - macos-latest runners are ARM64
-            npx pkg dist/bundle.js --targets node22-macos-arm64 --output bin/rimworld-workshop-downloader-backend-aarch64-apple-darwin
-          fi
-        shell: bash
-
-      - name: Build backend sidecar binary for current platform (Windows)
-        if: matrix.platform == 'windows'
-        run: |
-          cd backend
-          npm run build
-          npm run build:bundle
-          npx pkg dist/bundle.js --targets node22-win-x64 --output bin/rimworld-workshop-downloader-backend-x86_64-pc-windows-msvc.exe
-        shell: bash
+          cd scripts
+          cargo build --release --bin download_steamcmd
+          ./target/release/download_steamcmd
 
       - name: Install frontend dependencies
         run: |

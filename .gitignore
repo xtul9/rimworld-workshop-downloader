@@ -43,8 +43,5 @@ logs/
 *.log
 
 /bin
-backend/bin/
-
-backend/steamcmd/
-
 steamcmd/
+scripts/target/

@@ -29,14 +29,6 @@ if ! pkg-config --exists glib-2.0 2>/dev/null; then
     echo "Install system dependencies for Tauri (see README.md)"
 fi
 
-# Check and install backend dependencies if needed
-if [ ! -d "backend/node_modules" ]; then
-    echo "Installing backend dependencies..."
-    cd backend
-    npm install
-    cd ..
-fi
-
 # Check and install frontend dependencies if needed
 if [ ! -d "frontend/node_modules" ]; then
     echo "Installing frontend dependencies..."
@@ -44,20 +36,6 @@ if [ ! -d "frontend/node_modules" ]; then
     npm install
     cd ..
 fi
-
-# Start Node.js backend in background but keep output visible
-echo "Starting Node.js backend..."
-cd backend
-npm run dev > ../backend.log 2>&1 &
-BACKEND_PID=$!
-cd ..
-echo "Backend PID: $BACKEND_PID"
-echo "Backend logs are being written to: backend.log"
-echo "You can tail the logs with: tail -f backend.log"
-echo ""
-
-# Wait a moment for backend to start
-sleep 3
 
 # Start Tauri frontend
 echo "Starting Tauri frontend..."
@@ -74,8 +52,4 @@ fi
 
 cd frontend
 npm run tauri dev
-
-# After completion, stop backend
-echo "Stopping backend..."
-kill $BACKEND_PID 2>/dev/null
 

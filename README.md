@@ -1,6 +1,6 @@
 # Rimworld Workshop Downloader
 
-Desktop application for managing Rimworld mods from Steam Workshop. Built with Tauri (React) as frontend and Node.js (Express) as backend API.
+Desktop application for managing Rimworld mods from Steam Workshop. Built with Tauri (React frontend) and Rust (backend).
 
 **Native Wayland support** - the project uses modern solutions and fully supports Wayland on Linux.
 
@@ -23,51 +23,47 @@ Desktop application for managing Rimworld mods from Steam Workshop. Built with T
 
 ```
 rimworld-mod-updater-multiplatform/
-├── backend/                         # Node.js backend (Express + TypeScript)
+├── frontend/                        # Tauri + React frontend
 │   ├── src/
-│   │   ├── index.ts                # Main server file
-│   │   ├── routes/
-│   │   │   ├── mod.ts              # Mod management API routes
-│   │   │   └── workshop.ts         # Steam Workshop API routes
-│   │   └── services/
-│   │       ├── modQuery.ts         # Query mods for updates
-│   │       ├── modUpdater.ts       # Update mods logic
-│   │       ├── downloader.ts       # Download mods via SteamCMD
-│   │       ├── cache.ts            # API response caching
-│   │       └── rateLimiter.ts      # Rate limiting for API calls
-│   └── package.json
-└── frontend/                        # Tauri + React frontend
-    ├── src/
-    │   ├── components/             # React components
-    │   │   ├── QueryTab.tsx        # Query & Update tab
-    │   │   ├── DownloadTab.tsx    # Download mods tab
-    │   │   ├── SettingsTab.tsx     # Settings tab
-    │   │   ├── ModList.tsx         # Virtualized mod list
-    │   │   ├── ContextMenu.tsx     # Global context menu
-    │   │   └── RestoreBackupModal.tsx # Backup restore modal
-    │   ├── contexts/               # React contexts
-    │   │   ├── SettingsContext.tsx # Application settings
-    │   │   ├── ModsContext.tsx     # Mods state management
-    │   │   ├── ModsPathContext.tsx # Mods path management
-    │   │   ├── ModalContext.tsx    # Global modal management
-    │   │   └── ContextMenuContext.tsx # Global context menu
-    │   └── utils/                  # Utilities
-    │       ├── settingsStorage.ts   # Settings persistence
-    │       └── api.ts              # API client
-    └── src-tauri/                   # Rust (Tauri) source code
-        ├── src/
-        │   ├── main.rs              # Tauri entry point
-        │   └── lib.rs               # Tauri library
-        └── tauri.conf.json          # Tauri configuration
+│   │   ├── components/             # React components
+│   │   │   ├── QueryTab.tsx        # Query & Update tab
+│   │   │   ├── DownloadTab.tsx    # Download mods tab
+│   │   │   ├── SettingsTab.tsx     # Settings tab
+│   │   │   ├── ModList.tsx         # Virtualized mod list
+│   │   │   ├── ContextMenu.tsx     # Global context menu
+│   │   │   └── RestoreBackupModal.tsx # Backup restore modal
+│   │   ├── contexts/               # React contexts
+│   │   │   ├── SettingsContext.tsx # Application settings
+│   │   │   ├── ModsContext.tsx     # Mods state management
+│   │   │   ├── ModsPathContext.tsx # Mods path management
+│   │   │   ├── ModalContext.tsx    # Global modal management
+│   │   │   └── ContextMenuContext.tsx # Global context menu
+│   │   └── utils/                  # Utilities
+│   │       ├── settingsStorage.ts   # Settings persistence
+│   │       └── api.ts              # API client (Tauri invoke)
+│   └── src-tauri/                   # Rust (Tauri) backend
+│       ├── src/
+│       │   ├── main.rs              # Tauri entry point
+│       │   ├── lib.rs               # Tauri library
+│       │   ├── commands.rs          # Tauri commands (API)
+│       │   └── backend/             # Rust backend modules
+│       │       ├── mod_query.rs     # Query mods for updates
+│       │       ├── mod_updater.rs   # Update mods logic
+│       │       ├── downloader.rs    # Download mods via SteamCMD
+│       │       ├── steam_api.rs     # Steam API client
+│       │       ├── cache.rs          # API response caching
+│       │       └── rate_limiter.rs  # Rate limiting for API calls
+│       └── tauri.conf.json          # Tauri configuration
+├── scripts/                          # Build scripts
+│   └── src/
+│       └── main.rs                  # SteamCMD downloader (Rust)
+└── bin/                              # Binary dependencies
+    └── steamcmd/                     # SteamCMD binaries
 ```
 
 ## Requirements
 
-### Backend (Node.js)
-- Node.js (version 18 or newer)
-- npm
-
-### Frontend (Tauri)
+### Development
 - Node.js (version 18 or newer)
 - npm
 - Rust and Cargo (latest stable version)
@@ -139,13 +135,7 @@ git clone <repo-url>
 cd rimworld-mod-updater-multiplatform
 ```
 
-2. Install backend dependencies:
-```bash
-cd backend
-npm install
-```
-
-3. Install frontend dependencies:
+2. Install frontend dependencies:
 ```bash
 cd ../frontend
 npm install
@@ -154,15 +144,6 @@ npm install
 ## Running
 
 ### Development Mode
-
-The Node.js backend will start automatically when launching the Tauri application. If you want to start the backend manually:
-
-```bash
-cd backend
-npm run dev
-```
-
-The backend will be available at: `http://localhost:5000`
 
 To run the Tauri application:
 
@@ -188,15 +169,15 @@ To build a single executable/bundle:
 
 **Option 2: Manual build**
 
-1. Build the Node.js backend:
+1. Download SteamCMD:
 ```bash
-cd backend
-npm install  # Install all dependencies including devDependencies for TypeScript
-npm run build  # Compile TypeScript to JavaScript
-npm install --omit=dev  # Install only production dependencies for bundling
+cd scripts
+cargo build --release --bin download_steamcmd
+./target/release/download_steamcmd
+cd ..
 ```
 
-2. Build the Tauri application (this will bundle the backend):
+2. Build the Tauri application:
 ```bash
 cd ../frontend
 npm run build
@@ -209,59 +190,56 @@ The built application will be in `frontend/src-tauri/target/release/bundle/`:
 - **macOS**: `.dmg` or `.app`
 
 **Important Notes**:
-- The backend Node.js application is compiled to a native executable using `pkg` and bundled as a sidecar
-- **Node.js runtime is NOT required** on the target system - it's embedded in the application
 - **SteamCMD is automatically downloaded and bundled** during the build process - users don't need to install it
-- The application will automatically start the bundled backend when launched
-- The sidecar binary contains the entire Node.js runtime and all dependencies
+- The Rust backend is compiled directly into the Tauri application
+- **No separate backend process** - everything runs in a single application
 
 ## Architecture
 
 ### Communication Between Components
 
-- **Frontend (React)** communicates with **Backend (Node.js)** via HTTP REST API on port 5000
-- **Tauri (Rust)** starts the Node.js backend process when the application launches
-- The Node.js backend runs as a separate process and can also be run independently
+- **Frontend (React)** communicates with **Backend (Rust)** via Tauri commands (`invoke()`)
+- All backend logic runs in the same process as the Tauri application
+- No HTTP server or separate process required
 
-### API Endpoints
+### Tauri Commands (API)
 
-#### Mod Management (`/api/mod`)
-- `GET /api/mod/query?modsPath={path}&ignoredMods={ids}` - Query mods folder for outdated mods
-- `POST /api/mod/update` - Update selected mods (with optional backup)
-- `GET /api/mod/check-backup?modPath={path}&backupDirectory={dir}` - Check if backup exists for a mod
-- `POST /api/mod/restore-backup` - Restore mod from backup
-- `POST /api/mod/ignore-update` - Ignore specific update (creates .lastupdated file)
-- `GET /api/mod/status` - Backend status
-- `GET /api/mod/greet?name={name}` - Example greeting endpoint
+The application uses Tauri commands instead of HTTP endpoints:
 
-#### Steam Workshop (`/api/workshop`)
-- `GET /api/workshop/file-details?id={modId}` - Get mod details from Steam Workshop
-- `GET /api/workshop/is-collection?id={modId}` - Check if file is a collection
-- `GET /api/workshop/collection-details?id={collectionId}` - Get collection details
-- `POST /api/workshop/download` - Download mod(s) from Steam Workshop
-
-#### Health Check
-- `GET /api/health` - Health check endpoint
+- `query_mods(modsPath, ignoredMods)` - Query mods folder for outdated mods
+- `update_mods(mods, backupDirectory)` - Update selected mods (with optional backup)
+- `check_backup(modPath, backupDirectory)` - Check if backup exists for a mod
+- `check_backups(mods, backupDirectory)` - Batch check backups for multiple mods
+- `restore_backup(modPath, backupDirectory)` - Restore mod from backup
+- `restore_backups(mods, backupDirectory)` - Batch restore backups for multiple mods
+- `ignore_update(modPath)` - Ignore specific update (creates .lastupdated file)
+- `get_file_details(modId)` - Get mod details from Steam Workshop
+- `get_file_details_batch(modIds)` - Batch get mod details
+- `is_collection(modId)` - Check if file is a collection
+- `is_collection_batch(modIds)` - Batch check if files are collections
+- `get_collection_details(collectionId)` - Get collection details
+- `get_collection_details_batch(collectionIds)` - Batch get collection details
+- `download_mod(modId, modsPath)` - Download mod from Steam Workshop
 
 ## Development
 
-### Adding New API Endpoints
+### Adding New Tauri Commands
 
-1. Add new routes in `backend/src/routes/` (create new router or extend existing)
-2. Import and use the router in `backend/src/index.ts`
-3. The endpoint will be automatically available at `/api/{route}/{endpoint}`
+1. Add a new function in `frontend/src-tauri/src/commands.rs` with `#[tauri::command]` attribute
+2. Register the command in `frontend/src-tauri/src/lib.rs` in the `invoke_handler`
+3. Call the command from the frontend using `invoke()` from `@tauri-apps/api/core`
 
 ### Adding New React Features
 
 1. Edit components in `frontend/src/components/`
 2. Use React contexts in `frontend/src/contexts/` for global state management
-3. Use `fetch()` to communicate with the Node.js backend at `http://localhost:5000`
+3. Use `invoke()` from `@tauri-apps/api/core` to call Rust backend commands
 4. For Tauri-specific features, use `@tauri-apps/api` or Tauri plugins
 
 ### Key Technologies
 
 - **Frontend**: React 19, TypeScript, Tauri 2
-- **Backend**: Node.js, Express, TypeScript
+- **Backend**: Rust (compiled into Tauri application)
 - **Steam Integration**: SteamCMD for downloading mods
 - **State Management**: React Context API
 - **UI**: Custom CSS with dark/light mode support
@@ -334,22 +312,15 @@ The project natively supports Wayland. If you encounter a Wayland protocol error
 
 ### Window Closes Immediately After Opening
 - Check logs in the terminal - they may contain error information
-- Make sure the Node.js backend starts correctly
-- Check if port 5000 is not occupied by another application
+- Make sure Rust dependencies are installed correctly
+- Check if SteamCMD is available in `bin/steamcmd/`
 
 ### Cargo Not Found
 Run: `source $HOME/.cargo/env` or add it to your `~/.bashrc` / `~/.zshrc`
 
-### Backend Doesn't Start Automatically
-Run the backend manually in a separate terminal: `cd backend && npm run dev`
-
 ## Notes
 
-- The Node.js backend must be running on port 5000 (starts automatically)
-- CORS is configured to allow all origins (this should be changed in production)
-- The backend automatically starts when the Tauri application launches
-- The backend uses TypeScript and is compiled to JavaScript, then bundled into a native executable using `pkg`
-- **Node.js is embedded in the application** - users don't need to install it separately
+- **Rust backend is compiled directly into the application** - no separate process required
 - **SteamCMD is embedded in the application** - automatically downloaded during build and bundled with the app
 - Settings are persisted using Tauri's plugin-store
 - First run experience: Settings tab opens by default on first launch
@@ -361,17 +332,6 @@ This project is licensed under the MIT License.
 ### Embedded Components
 
 This application includes the following third-party components:
-
-#### Node.js Runtime
-
-The application bundles **Node.js 18** runtime, which is compiled into the backend executable using `pkg`.
-
-- **License**: MIT License
-- **Copyright**: Node.js contributors
-- **Source**: https://nodejs.org/
-- **License Compatibility**: MIT + MIT = fully compatible, no conflicts
-
-Node.js is embedded for user convenience - users do not need to install Node.js separately. The Node.js copyright notice is preserved in the bundled executable.
 
 #### SteamCMD
 
@@ -392,7 +352,6 @@ The application bundles **SteamCMD** command-line tool for downloading Steam Wor
 ### License Summary
 
 - **This Project**: MIT License
-- **Node.js Runtime**: MIT License (compatible)
 - **SteamCMD**: Steam Subscriber Agreement (separate license, owned by Valve)
 
 For the full license text, see the [LICENSE](LICENSE) file in the repository root.

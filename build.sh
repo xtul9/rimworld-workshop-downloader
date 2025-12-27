@@ -19,22 +19,11 @@ if ! command -v cargo &> /dev/null; then
     exit 1
 fi
 
-# Build backend
-echo "Building Node.js backend..."
-cd backend
-# Install all dependencies (including devDependencies for TypeScript and pkg)
-npm install
-# Build TypeScript to JavaScript
-npm run build
-
 # Download SteamCMD for current platform
 echo "Downloading SteamCMD for current platform..."
-npm run build:steamcmd
-
-# Build sidecar binaries (only for current platform to save time)
-echo "Building sidecar binary for current platform (this may take a while)..."
-echo "Note: For other platforms, build on those platforms or use CI/CD"
-npm run build:sidecar
+cd scripts
+cargo build --release --bin download_steamcmd
+./target/release/download_steamcmd
 cd ..
 
 # Build frontend
