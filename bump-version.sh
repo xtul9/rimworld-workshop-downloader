@@ -55,6 +55,8 @@ FILES=(
     "backend/tauri.conf.json"
     "backend/Cargo.toml"
     "frontend/package.json"
+    "flake.nix"
+    "backend/Cargo.lock"
 )
 
 # Function to update version in JSON file
@@ -101,12 +103,90 @@ update_cargo_version() {
     print_info "Updated: $file"
 }
 
+# Function to update version in flake.nix
+update_flake_version() {
+    local file="$1"
+    local version="$2"
+    
+    if [ ! -f "$file" ]; then
+        print_error "File not found: $file"
+        return 1
+    fi
+    
+    # Use sed to replace version = "x.y.z"; (in flake.nix format)
+    # Pattern matches: version = "0.4.0"; (with optional spaces)
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        # macOS uses BSD sed
+        sed -i '' "s/version[[:space:]]*=[[:space:]]*\"[^\"]*\"/version = \"$version\"/g" "$file"
+    else
+        # Linux uses GNU sed
+        sed -i "s/version[[:space:]]*=[[:space:]]*\"[^\"]*\"/version = \"$version\"/g" "$file"
+    fi
+    
+    print_info "Updated: $file"
+}
+
+# Function to update version in Cargo.lock
+update_cargo_lock_version() {
+    local file="$1"
+    local version="$2"
+    
+    if [ ! -f "$file" ]; then
+        print_error "File not found: $file"
+        return 1
+    fi
+    
+    # Use sed to replace version for rimworld-workshop-downloader package
+    # Pattern: name = "rimworld-workshop-downloader" followed by version = "x.y.z"
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        # macOS uses BSD sed - need to handle multiline pattern
+        # First find the package entry, then update the version on the next line
+        awk -v version="$version" '
+            /^name = "rimworld-workshop-downloader"/ {
+                found = 1
+                print
+                getline
+                if (/^version = /) {
+                    print "version = \"" version "\""
+                } else {
+                    print
+                }
+                next
+            }
+            { print }
+        ' "$file" > "$file.tmp" && mv "$file.tmp" "$file"
+    else
+        # Linux uses GNU sed - can use more advanced patterns
+        # Use awk for better multiline handling
+        awk -v version="$version" '
+            /^name = "rimworld-workshop-downloader"/ {
+                found = 1
+                print
+                getline
+                if (/^version = /) {
+                    print "version = \"" version "\""
+                } else {
+                    print
+                }
+                next
+            }
+            { print }
+        ' "$file" > "$file.tmp" && mv "$file.tmp" "$file"
+    fi
+    
+    print_info "Updated: $file"
+}
+
 # Update all files
 print_info "Updating version in configuration files..."
 echo ""
 
 for file in "${FILES[@]}"; do
-    if [[ "$file" == *.toml ]]; then
+    if [[ "$file" == "flake.nix" ]]; then
+        update_flake_version "$file" "$NEW_VERSION"
+    elif [[ "$file" == "backend/Cargo.lock" ]]; then
+        update_cargo_lock_version "$file" "$NEW_VERSION"
+    elif [[ "$file" == *.toml ]]; then
         update_cargo_version "$file" "$NEW_VERSION"
     else
         update_json_version "$file" "$NEW_VERSION"

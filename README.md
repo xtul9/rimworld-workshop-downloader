@@ -25,7 +25,7 @@ Desktop application for managing Rimworld mods from Steam Workshop. Built with T
 ## Project Structure
 
 ```
-rimworld-mod-updater-multiplatform/
+rimworld-workshop-downloader/
 ├── frontend/                        # React frontend
 │   ├── components/                  # React components
 │   │   ├── QueryTab.tsx             # Query & Update tab
@@ -134,15 +134,44 @@ sudo pacman -S \
 
 ## Installation
 
+### Using Nix (Recommended for Nix users)
+
+If you have Nix installed, you can use the provided flake:
+
+**Development environment:**
+```bash
+nix develop
+# Then run: npm run tauri dev (from frontend directory)
+```
+
+**Build the application:**
+```bash
+nix build
+# Built packages will be in result/share/rimworld-workshop-downloader/
+```
+
+**Install system-wide:**
+```bash
+nix profile install github:xtul9/rimworld-workshop-downloader
+```
+
+The flake automatically provides:
+- Rust toolchain (stable)
+- Node.js 20
+- All system dependencies for Tauri (webkit2gtk, openssl, etc.)
+- Development shell with all tools configured
+
+### Manual Installation
+
 1. Clone the repository:
 ```bash
 git clone <repo-url>
-cd rimworld-mod-updater-multiplatform
+cd rimworld-workshop-downloader
 ```
 
 2. Install frontend dependencies:
 ```bash
-cd ../frontend
+cd frontend
 npm install
 ```
 
@@ -319,7 +348,7 @@ To create a new release:
 4. **GitHub Actions will automatically**:
    - Build the application for Linux, Windows, and macOS
    - Create a GitHub Release with all binaries attached
-   - The release will be available at: `https://github.com/YOUR_USERNAME/rimworld-mod-updater-multiplatform/releases`
+   - The release will be available at: `https://github.com/xtul9/rimworld-workshop-downloader/releases`
 
 ### Build Artifacts
 
