@@ -1023,25 +1023,45 @@ pub async fn download_mod(
     
     // Copy mod to mods folder
     let updater = ModUpdater;
-    let download_path = PathBuf::from("steamcmd")
-        .join("steamapps")
-        .join("workshop")
-        .join("content")
-        .join("294100");
+    let downloader_for_path = get_downloader();
+    let download_path = {
+        let dl = downloader_for_path.lock().await;
+        dl.download_path().clone()
+    };
     let mods_path_buf = PathBuf::from(&mods_path);
     
-    // Get mod details to retrieve title and time_updated
-    let mod_id_for_api = mod_id.clone();
-    let steam_api = get_steam_api();
-    let (mod_title, time_updated) = {
-        let mut api = steam_api.lock().await;
-        match api.get_file_details(&mod_id_for_api).await {
-            Ok(details) => (Some(details.title.clone()), details.time_updated),
-            Err(_) => {
-                (None, std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs() as i64)
+    // Get mod details to retrieve title and time_updated (use batch query for efficiency)
+    let (mod_title, time_updated) = match crate::backend::mod_query::query_mod_batch(&[mod_id.clone()], 0).await {
+        Ok(mut details) => {
+            if let Some(detail) = details.pop() {
+                (Some(detail.title.clone()), detail.time_updated)
+            } else {
+                // Fallback to SteamApi if batch query returns no results
+                let steam_api = get_steam_api();
+                let mut api = steam_api.lock().await;
+                match api.get_file_details(&mod_id).await {
+                    Ok(details) => (Some(details.title.clone()), details.time_updated),
+                    Err(_) => {
+                        (None, std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs() as i64)
+                    }
+                }
+            }
+        }
+        Err(_) => {
+            // Fallback to SteamApi if batch query fails
+            let steam_api = get_steam_api();
+            let mut api = steam_api.lock().await;
+            match api.get_file_details(&mod_id).await {
+                Ok(details) => (Some(details.title.clone()), details.time_updated),
+                Err(_) => {
+                    (None, std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs() as i64)
+                }
             }
         }
     };
@@ -1070,15 +1090,18 @@ pub async fn download_mod(
         }
     };
     
-    // Create .lastupdated file
+    // Create .lastupdated file (use spawn_blocking for I/O)
     let about_path = mod_path.join("About");
     let last_updated_path = about_path.join(".lastupdated");
+    let time_updated_str = time_updated.to_string();
     
-    if let Err(e) = std::fs::create_dir_all(&about_path) {
-        eprintln!("Failed to create About directory: {}", e);
-    } else if let Err(e) = std::fs::write(&last_updated_path, time_updated.to_string()) {
-        eprintln!("Failed to write .lastupdated file: {}", e);
-    }
+    tokio::task::spawn_blocking(move || {
+        if let Err(e) = std::fs::create_dir_all(&about_path) {
+            eprintln!("Failed to create About directory: {}", e);
+        } else if let Err(e) = std::fs::write(&last_updated_path, time_updated_str) {
+            eprintln!("Failed to write .lastupdated file: {}", e);
+        }
+    }).await.ok();
     
     // Mark as downloaded
     {
