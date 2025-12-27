@@ -8,14 +8,6 @@ fn default_i32() -> i32 {
     0
 }
 
-fn default_u64() -> u64 {
-    0
-}
-
-fn default_i64() -> i64 {
-    0
-}
-
 fn default_bool() -> bool {
     false
 }
@@ -112,10 +104,6 @@ pub struct WorkshopFileDetails {
     pub tags: Vec<Tag>,
 }
 
-// Default value helper for tags
-fn default_vec_tag() -> Vec<Tag> {
-    Vec::new()
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tag {
@@ -325,7 +313,6 @@ pub async fn query_mods_for_updates(
 
     // Query mod IDs from each folder
     let mut mods: Vec<BaseMod> = Vec::new();
-    let mut valid_mod_count = 0;
 
     for folder in folders {
         if let Some(mod_id) = query_mod_id(&folder)? {
@@ -340,7 +327,6 @@ pub async fn query_mods_for_updates(
                 details: None,
                 updated: None,
             });
-            valid_mod_count += 1;
         }
     }
 
@@ -386,7 +372,6 @@ pub async fn query_mods_for_updates(
 
     // Check which mods have updates available
     let mut mods_with_updates_map = std::collections::HashMap::new();
-    let _update_count = 0;
 
     for mod_ref in &mods {
         let details = match &mod_ref.details {
@@ -395,17 +380,6 @@ pub async fn query_mods_for_updates(
                 continue;
             }
         };
-
-        let folder_name = mod_ref.folder.as_ref()
-            .map(|s| s.as_str())
-            .unwrap_or_else(|| {
-                Path::new(&mod_ref.mod_path)
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("unknown")
-            });
-
-        let id = &details.publishedfileid;
         
         // Check for various error conditions
         if details.result == 9 {
