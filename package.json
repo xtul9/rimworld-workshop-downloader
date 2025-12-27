@@ -1,1 +1,9 @@
-{}
+{
+  "name": "rimworld-workshop-downloader",
+  "version": "0.4.1",
+  "private": true,
+  "scripts": {
+    "tauri": "cd backend && npx --prefix ../frontend tauri",
+    "tauri:icon": "cd backend && npx --prefix ../frontend tauri icon ../assets/icon.png"
+  }
+}

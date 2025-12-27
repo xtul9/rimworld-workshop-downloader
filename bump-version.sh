@@ -55,6 +55,7 @@ FILES=(
     "backend/tauri.conf.json"
     "backend/Cargo.toml"
     "frontend/package.json"
+    "package.json"
     "flake.nix"
     "backend/Cargo.lock"
 )
