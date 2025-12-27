@@ -1,13 +1,16 @@
 # Rimworld Workshop Downloader
 
-Desktop application for managing Rimworld mods from Steam Workshop. Built with Tauri (React frontend) and Rust (backend).
-
-**Native Wayland support** - the project uses modern solutions and fully supports Wayland on Linux.
+Desktop application for managing Rimworld mods from Steam Workshop. Built with Tauri on the backend, React on the frontend.
 
 ## Features
 
 - **Query & Update Mods**: Check for outdated mods in your Rimworld mods folder and update them automatically
 - **Download Mods**: Download mods directly from Steam Workshop by ID or URL
+- **Installed Mods Management**: View all installed mods with search, sort, and update capabilities
+- **Parallel Downloads**: 
+  - Automatic parallel downloading using up to 4 SteamCMD instances
+  - Size-based load balancing for optimal performance
+  - Real-time progress updates via file system watching
 - **Mod Management**: 
   - Ignore mods in three ways: temporarily from list, ignore specific update, or permanently ignore
   - Manage ignored mods list in Settings
@@ -201,20 +204,38 @@ The built application will be in `frontend/src-tauri/target/release/bundle/`:
 ### Communication Between Components
 
 - **Frontend (React)** communicates with **Backend (Rust)** via Tauri commands (`invoke()`)
+- **Real-time Updates**: Backend emits Tauri events for download/update progress
 - All backend logic runs in the same process as the Tauri application
 - No HTTP server or separate process required
+
+### Performance Optimizations
+
+- **Parallel Mod Downloads**: Uses up to 4 parallel SteamCMD instances for faster downloads
+  - Size-based load balancing distributes mods by file size across instances
+  - Automatic instance count calculation based on number of mods
+- **File System Watching**: Uses native file system events (inotify/kqueue/ReadDirectoryChangesW) instead of polling
+  - Instant detection when mods are downloaded
+  - Lower CPU usage compared to polling
+- **Parallel API Queries**: Batch queries to Steam API with parallel processing
+- **Parallel Mod Updates**: Multiple mods can be updated simultaneously after download
 
 ### Tauri Commands (API)
 
 The application uses Tauri commands instead of HTTP endpoints:
 
 - `query_mods(modsPath, ignoredMods)` - Query mods folder for outdated mods
+- `list_installed_mods(modsPath)` - List all installed mods (fast, local data only)
+- `update_mod_details(mods)` - Fetch detailed Steam API information for mods
 - `update_mods(mods, backupDirectory)` - Update selected mods (with optional backup)
+  - Uses parallel SteamCMD instances for faster downloads
+  - Emits real-time events: `mod-downloaded`, `mod-updated`
 - `check_backup(modPath, backupDirectory)` - Check if backup exists for a mod
 - `check_backups(mods, backupDirectory)` - Batch check backups for multiple mods
 - `restore_backup(modPath, backupDirectory)` - Restore mod from backup
 - `restore_backups(mods, backupDirectory)` - Batch restore backups for multiple mods
-- `ignore_update(modPath)` - Ignore specific update (creates .lastupdated file)
+- `ignore_update(mods)` - Ignore specific update (creates .ignoredupdate file)
+- `undo_ignore_update(mods)` - Undo ignored update
+- `check_ignored_updates(mods)` - Check which mods have ignored updates
 - `get_file_details(modId)` - Get mod details from Steam Workshop
 - `get_file_details_batch(modIds)` - Batch get mod details
 - `is_collection(modId)` - Check if file is a collection
@@ -222,6 +243,15 @@ The application uses Tauri commands instead of HTTP endpoints:
 - `get_collection_details(collectionId)` - Get collection details
 - `get_collection_details_batch(collectionIds)` - Batch get collection details
 - `download_mod(modId, modsPath)` - Download mod from Steam Workshop
+
+### Tauri Events
+
+The application emits real-time events for download/update progress:
+
+- `mod-downloaded` - Emitted when a mod is downloaded by SteamCMD
+  - Payload: `{ modId: string }`
+- `mod-updated` - Emitted when a mod is successfully updated or fails
+  - Payload: `{ modId: string, success: boolean, error?: string }`
 
 ## Development
 
@@ -246,6 +276,8 @@ The application uses Tauri commands instead of HTTP endpoints:
 - **State Management**: React Context API
 - **UI**: Custom CSS with dark/light mode support
 - **List Virtualization**: react-window for performance
+- **File System Watching**: notify crate for efficient file system event monitoring
+- **Parallel Processing**: tokio for async/await and parallel task execution
 
 ## CI/CD and Releases
 
