@@ -223,16 +223,23 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
     if (selected.length > 1) {
       // Multiple mods selected
       items.push(
-        { label: "Update selected mods", action: "update" },
-        { separator: true },
-        { label: "Hide for now", action: "ignore-from-list" },
+        { label: useInstalledModsContext ? "Force update selected mods" : "Update selected mods", action: "update" },
+        { separator: true }
+      );
+      
+      // Only show "Hide for now" in Query & Update tab
+      if (!useInstalledModsContext) {
+        items.push({ label: "Hide for now", action: "ignore-from-list" });
+      }
+      
+      items.push(
         { label: "Ignore this update", action: "ignore-this-update" },
         { label: "Ignore mods completely", action: "ignore-permanently" }
       );
     } else {
       // Single mod
       items.push(
-        { label: "Update", action: "update" },
+        { label: useInstalledModsContext ? "Force update" : "Update", action: "update" },
         { 
           label: hasBackup ? "Restore Backup" : "No backup available", 
           action: "restore-backup",
@@ -242,9 +249,16 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
         { label: "Open mod folder", action: "open-folder" },
         { label: "Open workshop page", action: "open-workshop" },
         { label: "Open changelog page", action: "open-changelog" },
-        { separator: true },
-        { label: "Hide for now", action: "ignore-from-list" },
-        { label: "Ignore this update", action: "ignore-this-update" },
+        { separator: true }
+      );
+      
+      // Only show "Hide for now" in Query & Update tab
+      if (!useInstalledModsContext) {
+        items.push({ label: "Hide for now", action: "ignore-from-list" });
+        items.push({ label: "Ignore this update", action: "ignore-this-update" });
+      }
+      
+      items.push(
         { label: "Ignore mod completely", action: "ignore-permanently" }
       );
       
@@ -260,7 +274,7 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
       items,
       handleContextAction
     );
-  }, [mods, selectedMods, modBackups, ignoredUpdates, settings.backupDirectory, showContextMenu]);
+  }, [mods, selectedMods, modBackups, ignoredUpdates, settings.backupDirectory, showContextMenu, useInstalledModsContext]);
 
   const handleContextAction = useCallback(async (action: string, data: { mod: BaseMod; selected: BaseMod[] }) => {
     const { mod, selected } = data;
