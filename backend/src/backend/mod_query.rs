@@ -531,7 +531,7 @@ pub async fn query_mods_for_updates(
 
 /// List all installed mods quickly with only local data (no API calls)
 /// This returns immediately with mod_id, folder, mod_path, and local metadata
-pub fn list_installed_mods_fast(
+pub async fn list_installed_mods_fast(
     mods_path: &Path,
 ) -> Result<Vec<BaseMod>, Box<dyn std::error::Error>> {
     // Check if mods path exists
@@ -559,24 +559,30 @@ pub fn list_installed_mods_fast(
         return Ok(vec![]);
     }
 
-    // Query mod IDs from each folder and collect local data
+    // Query mod IDs from each folder in parallel
+    let mod_id_futures: Vec<_> = folders.into_iter().map(|folder| {
+        let folder_path = folder.clone();
+        tokio::task::spawn_blocking(move || {
+            query_mod_id(&folder_path).ok().flatten().map(|mod_id| {
+                let folder_name = folder_path.file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|s| s.to_string());
+                
+                BaseMod {
+                    mod_id: mod_id.clone(),
+                    mod_path: folder_path.to_string_lossy().to_string(),
+                    folder: folder_name,
+                    details: None, // Will be populated by update_mod_details later
+                    updated: None,
+                }
+            })
+        })
+    }).collect();
+    
     let mut mods: Vec<BaseMod> = Vec::new();
-
-    for folder in folders {
-        if let Some(mod_id) = query_mod_id(&folder)? {
-            let folder_name = folder.file_name()
-                .and_then(|n| n.to_str())
-                .map(|s| s.to_string());
-            
-            // Get local metadata (folder size, last updated time)
-            // Note: We don't populate details here - that will be done in background
-            mods.push(BaseMod {
-                mod_id: mod_id.clone(),
-                mod_path: folder.to_string_lossy().to_string(),
-                folder: folder_name,
-                details: None, // Will be populated by update_mod_details later
-                updated: None,
-            });
+    for future in mod_id_futures {
+        if let Ok(Some(mod_item)) = future.await {
+            mods.push(mod_item);
         }
     }
 
@@ -596,9 +602,9 @@ pub async fn update_mod_details(
     const BATCH_COUNT: usize = 50;
     let mut updated_mods = mods;
 
-    // Create batches and query them in parallel (with small delays to avoid rate limiting)
-    let mut batch_futures = Vec::new();
+    // Create batches and query them in parallel (with small staggered delays to avoid rate limiting)
     let num_batches = (updated_mods.len() + BATCH_COUNT - 1) / BATCH_COUNT;
+    let mut batch_futures = Vec::new();
     
     for batch_idx in 0..num_batches {
         let start = batch_idx * BATCH_COUNT;
@@ -606,22 +612,24 @@ pub async fn update_mod_details(
         let mod_ids: Vec<String> = updated_mods[start..end].iter().map(|m| m.mod_id.clone()).collect();
         let mod_indices = (start..end).collect::<Vec<usize>>();
         
-        // Add delay between starting batches to avoid rate limiting
-        if batch_idx > 0 {
-            tokio::time::sleep(tokio::time::Duration::from_millis(250 * batch_idx as u64)).await;
-        }
-        
-        // Move mod_ids into the future to avoid lifetime issues
+        // Stagger batch starts with small delays to avoid rate limiting
+        // But start them all immediately instead of waiting sequentially
         let future = async move {
-            query_mod_batch(&mod_ids, 0).await
+            // Small delay based on batch index to stagger requests
+            if batch_idx > 0 {
+                tokio::time::sleep(tokio::time::Duration::from_millis(100 * batch_idx as u64)).await;
+            }
+            query_mod_batch(&mod_ids, 0).await.map(|details| (details, mod_indices))
         };
-        batch_futures.push((future, mod_indices));
+        batch_futures.push(future);
     }
     
-    // Wait for all batches and update mods
-    for (batch_future, mod_indices) in batch_futures {
-        match batch_future.await {
-            Ok(details) => {
+    // Wait for all batches in parallel and update mods
+    let batch_results: Vec<_> = futures::future::join_all(batch_futures).await;
+    
+    for result in batch_results {
+        match result {
+            Ok((details, mod_indices)) => {
                 // Create HashMap for O(1) lookup instead of O(n) find()
                 let details_map: std::collections::HashMap<String, WorkshopFileDetails> = details
                     .into_iter()
@@ -635,7 +643,7 @@ pub async fn update_mod_details(
                     }
                 }
             }
-            Err(_e) => {
+            Err(_) => {
                 // Failed to query batch, continue with next batch
             }
         }
@@ -650,7 +658,7 @@ pub async fn list_installed_mods(
     mods_path: &Path,
 ) -> Result<Vec<BaseMod>, Box<dyn std::error::Error>> {
     // Use fast version that returns immediately with local data only
-    list_installed_mods_fast(mods_path)
+    list_installed_mods_fast(mods_path).await
 }
 
 #[cfg(test)]

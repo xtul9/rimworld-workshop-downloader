@@ -532,8 +532,6 @@ pub async fn ignore_update(
         return Ok(vec![]);
     }
     
-    let steam_api = get_steam_api();
-    
     // Separate mods with and without details
     let mut mods_with_details = Vec::new();
     let mut mods_without_details = Vec::new();
@@ -550,38 +548,69 @@ pub async fn ignore_update(
     let mut mod_id_to_time_updated: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
     if !mods_without_details.is_empty() {
         let mod_ids: Vec<String> = mods_without_details.iter().map(|m| m.mod_id.clone()).collect();
-        let mut api = steam_api.lock().await;
         
-        // Query in batches of 50
+        // Query in batches of 50 in parallel
         const BATCH_SIZE: usize = 50;
-        for i in (0..mod_ids.len()).step_by(BATCH_SIZE) {
-            let batch_end = std::cmp::min(i + BATCH_SIZE, mod_ids.len());
-            let batch = &mod_ids[i..batch_end];
+        let mut batch_futures = Vec::new();
+        
+        for batch_idx in 0..(mod_ids.len() + BATCH_SIZE - 1) / BATCH_SIZE {
+            let start = batch_idx * BATCH_SIZE;
+            let end = std::cmp::min(start + BATCH_SIZE, mod_ids.len());
+            let batch: Vec<String> = mod_ids[start..end].iter().cloned().collect();
+            let api_clone = get_steam_api();
             
-            // Use query_mod_batch for efficient batch querying
-            match crate::backend::mod_query::query_mod_batch(batch, 0).await {
-                Ok(details) => {
-                    for detail in details {
-                        mod_id_to_time_updated.insert(detail.publishedfileid, detail.time_updated);
-                    }
+            let future = async move {
+                // Small delay to stagger requests
+                if batch_idx > 0 {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(100 * batch_idx as u64)).await;
                 }
-                Err(_) => {
-                    // If batch query fails, fall back to individual queries
-                    for mod_id in batch {
-                        match api.get_file_details(mod_id).await {
-                            Ok(details) => {
-                                mod_id_to_time_updated.insert(mod_id.clone(), details.time_updated);
-                            }
-                            Err(_) => {
-                                // Fallback to current time
-                                let current_time = std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap()
-                                    .as_secs() as i64;
-                                mod_id_to_time_updated.insert(mod_id.clone(), current_time);
+                
+                // Use query_mod_batch for efficient batch querying
+                match crate::backend::mod_query::query_mod_batch(&batch, 0).await {
+                    Ok(details) => {
+                        let mut result = std::collections::HashMap::new();
+                        for detail in details {
+                            result.insert(detail.publishedfileid, detail.time_updated);
+                        }
+                        Ok(result)
+                    }
+                    Err(_) => {
+                        // If batch query fails, fall back to individual queries sequentially
+                        // (API lock prevents parallel access)
+                        let mut api = api_clone.lock().await;
+                        let mut result = std::collections::HashMap::new();
+                        
+                        for mod_id in batch {
+                            match api.get_file_details(&mod_id).await {
+                                Ok(details) => {
+                                    result.insert(mod_id, details.time_updated);
+                                }
+                                Err(_) => {
+                                    // Fallback to current time
+                                    let current_time = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap()
+                                        .as_secs() as i64;
+                                    result.insert(mod_id, current_time);
+                                }
                             }
                         }
+                        Ok(result)
                     }
+                }
+            };
+            batch_futures.push(future);
+        }
+        
+        // Wait for all batches in parallel
+        let batch_results: Vec<Result<std::collections::HashMap<String, i64>, Box<dyn std::error::Error + Send + Sync>>> = futures::future::join_all(batch_futures).await;
+        for result in batch_results {
+            match result {
+                Ok(batch_map) => {
+                    mod_id_to_time_updated.extend(batch_map);
+                }
+                Err(_) => {
+                    // Batch failed, skip it
                 }
             }
         }
@@ -950,33 +979,46 @@ pub async fn is_collection_batch(
         .cloned()
         .collect();
     
-    // Query details in batches of 50
+    // Query details in batches of 50 in parallel
     const BATCH_SIZE: usize = 50;
-    let mut all_details = Vec::new();
+    let mut batch_futures = Vec::new();
     
-    for i in (0..unique_ids.len()).step_by(BATCH_SIZE) {
-        let batch_end = std::cmp::min(i + BATCH_SIZE, unique_ids.len());
-        let batch = &unique_ids[i..batch_end];
+    for batch_idx in 0..(unique_ids.len() + BATCH_SIZE - 1) / BATCH_SIZE {
+        let start = batch_idx * BATCH_SIZE;
+        let end = std::cmp::min(start + BATCH_SIZE, unique_ids.len());
+        let batch: Vec<String> = unique_ids[start..end].iter().cloned().collect();
+        let steam_api = get_steam_api();
         
-        match crate::backend::mod_query::query_mod_batch(batch, 0).await {
-            Ok(mut details) => {
-                all_details.append(&mut details);
+        let future = async move {
+            // Small delay to stagger requests
+            if batch_idx > 0 {
+                tokio::time::sleep(tokio::time::Duration::from_millis(100 * batch_idx as u64)).await;
             }
-            Err(_) => {
-                // If batch query fails, try individual queries with cache
-                let steam_api = get_steam_api();
-                for mod_id in batch {
+            
+            match crate::backend::mod_query::query_mod_batch(&batch, 0).await {
+                Ok(details) => Ok(details),
+                Err(_) => {
+                    // If batch query fails, try individual queries with cache
                     let mut api = steam_api.lock().await;
-                    if let Ok(detail) = api.get_file_details(mod_id).await {
-                        all_details.push(detail);
+                    let mut fallback_details = Vec::new();
+                    for mod_id in &batch {
+                        if let Ok(detail) = api.get_file_details(mod_id).await {
+                            fallback_details.push(detail);
+                        }
                     }
+                    Ok(fallback_details)
                 }
             }
-        }
-        
-        // Small delay between batches to avoid rate limiting
-        if i + BATCH_SIZE < unique_ids.len() {
-            tokio::time::sleep(tokio::time::Duration::from_millis(250)).await;
+        };
+        batch_futures.push(future);
+    }
+    
+    // Wait for all batches in parallel
+    let batch_results: Vec<Result<Vec<crate::backend::mod_query::WorkshopFileDetails>, Box<dyn std::error::Error + Send + Sync>>> = futures::future::join_all(batch_futures).await;
+    let mut all_details = Vec::new();
+    for result in batch_results {
+        if let Ok(mut details) = result {
+            all_details.append(&mut details);
         }
     }
     
