@@ -222,7 +222,7 @@ async fn find_all_mod_folders_with_id(mods_path: &std::path::Path, mod_id: &str)
     Ok(folders)
 }
 
-/// Check if backup exists for a mod
+/// Check if backup exists for a mod (optimized with spawn_blocking)
 #[tauri::command]
 pub async fn check_backup(
     mod_path: String,
@@ -232,36 +232,135 @@ pub async fn check_backup(
         let mod_path_buf = PathBuf::from(&mod_path);
         let folder_name = mod_path_buf.file_name()
             .and_then(|n| n.to_str())
-            .ok_or("Invalid mod path")?;
+            .ok_or("Invalid mod path")?
+            .to_string();
         
-        let backup_path = PathBuf::from(&backup_dir).join(folder_name);
+        let backup_path = PathBuf::from(&backup_dir).join(&folder_name);
         
-        if backup_path.exists() {
-            let metadata = std::fs::metadata(&backup_path)
-                .map_err(|e| format!("Failed to get backup metadata: {}", e))?;
-            
-            let backup_date = metadata.modified()
-                .or_else(|_| metadata.accessed())
-                .unwrap_or(std::time::SystemTime::now());
-            
-            return Ok(serde_json::json!({
-                "hasBackup": true,
-                "backupPath": backup_path.to_string_lossy(),
-                "backupDate": backup_date.duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs()
-            }));
-        }
+        // Use spawn_blocking for I/O operations to avoid blocking the async runtime
+        let result = tokio::task::spawn_blocking(move || {
+            if backup_path.exists() {
+                match std::fs::metadata(&backup_path) {
+                    Ok(metadata) => {
+                        let backup_date = metadata.modified()
+                            .or_else(|_| metadata.accessed())
+                            .unwrap_or(std::time::SystemTime::now());
+                        
+                        Ok(serde_json::json!({
+                            "hasBackup": true,
+                            "backupPath": backup_path.to_string_lossy(),
+                            "backupDate": backup_date.duration_since(std::time::UNIX_EPOCH)
+                                .unwrap()
+                                .as_secs()
+                        }))
+                    }
+                    Err(e) => Err(format!("Failed to get backup metadata: {}", e))
+                }
+            } else {
+                Ok(serde_json::json!({
+                    "hasBackup": false,
+                    "backupPath": backup_path.to_string_lossy()
+                }))
+            }
+        }).await
+        .map_err(|e| format!("Task panicked: {:?}", e))??;
         
-        Ok(serde_json::json!({
-            "hasBackup": false,
-            "backupPath": backup_path.to_string_lossy()
-        }))
+        Ok(result)
     } else {
         Ok(serde_json::json!({
             "hasBackup": false,
             "backupPath": null
         }))
+    }
+}
+
+/// Check if backups exist for multiple mods (optimized batch version)
+#[tauri::command]
+pub async fn check_backups(
+    mod_paths: Vec<String>,
+    backup_directory: Option<String>,
+) -> Result<serde_json::Value, String> {
+    if mod_paths.is_empty() {
+        return Ok(serde_json::json!({}));
+    }
+    
+    if let Some(backup_dir) = backup_directory {
+        let backup_dir_buf = PathBuf::from(&backup_dir);
+        
+        // Check all backups in parallel
+        let mut check_futures = Vec::new();
+        
+        for mod_path in mod_paths {
+            let mod_path_buf = PathBuf::from(&mod_path);
+            let folder_name = match mod_path_buf.file_name()
+                .and_then(|n| n.to_str()) {
+                Some(name) => name.to_string(),
+                None => continue, // Skip invalid paths
+            };
+            
+            let backup_path = backup_dir_buf.join(&folder_name);
+            let mod_path_clone = mod_path.clone();
+            
+            // Spawn blocking task for each backup check
+            let future = tokio::task::spawn_blocking(move || {
+                if backup_path.exists() {
+                    match std::fs::metadata(&backup_path) {
+                        Ok(metadata) => {
+                            let backup_date = metadata.modified()
+                                .or_else(|_| metadata.accessed())
+                                .unwrap_or(std::time::SystemTime::now());
+                            
+                            Some(serde_json::json!({
+                                "hasBackup": true,
+                                "backupPath": backup_path.to_string_lossy(),
+                                "backupDate": backup_date.duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap()
+                                    .as_secs()
+                            }))
+                        }
+                        Err(_) => Some(serde_json::json!({
+                            "hasBackup": false,
+                            "backupPath": backup_path.to_string_lossy()
+                        }))
+                    }
+                } else {
+                    Some(serde_json::json!({
+                        "hasBackup": false,
+                        "backupPath": backup_path.to_string_lossy()
+                    }))
+                }
+            });
+            
+            check_futures.push((mod_path_clone, future));
+        }
+        
+        // Wait for all checks to complete and build result map
+        let mut results = serde_json::Map::new();
+        for (mod_path, future) in check_futures {
+            match future.await {
+                Ok(Some(result)) => {
+                    results.insert(mod_path, result);
+                }
+                Ok(None) => {
+                    // Invalid path, skip
+                }
+                Err(_) => {
+                    // Task panicked, skip
+                }
+            }
+        }
+        
+        Ok(serde_json::Value::Object(results))
+    } else {
+        // No backup directory, return all false
+        let mut results = serde_json::Map::new();
+        for mod_path in mod_paths {
+            results.insert(mod_path, serde_json::json!({
+                "hasBackup": false,
+                "backupPath": null
+            }));
+        }
+        Ok(serde_json::Value::Object(results))
     }
 }
 

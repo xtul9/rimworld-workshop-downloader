@@ -243,6 +243,7 @@ pub fn run() {
             commands::query_mods,
             commands::update_mods,
             commands::check_backup,
+            commands::check_backups,
             commands::restore_backup,
             commands::ignore_update,
             commands::get_file_details,

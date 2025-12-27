@@ -48,47 +48,56 @@ export default function ModList({ onUpdateSelected, modsPath }: ModListProps) {
   }, [mods.length]);
 
   // Check backup availability for mods - using useCallback to ensure it's available in other functions
+  // Optimized to use batch check_backups command instead of individual check_backup calls
   const checkBackups = useCallback(async () => {
     if (mods.length === 0 || !modsPath || !settings.backupDirectory) {
       // Clear backups if no backup directory is configured
       setModBackups(new Map());
+      setBackupDates(new Map());
       return;
     }
 
-    const backupChecks = mods.map(async (mod) => {
-      if (!mod.modPath) return null;
+    try {
+      // Collect all mod paths
+      const modPaths = mods
+        .map(mod => mod.modPath)
+        .filter((path): path is string => Boolean(path));
       
-      try {
-        // Call Tauri command to check for backup
-        const data = await invoke<{ hasBackup: boolean; backupDate?: number; backupPath?: string }>("check_backup", {
-          modPath: mod.modPath,
-          backupDirectory: settings.backupDirectory || undefined
-        });
-        
-        return { 
-          modId: mod.modId, 
-          hasBackup: data.hasBackup,
-          backupDate: data.backupDate ? new Date(data.backupDate * 1000) : null // Convert seconds to milliseconds
-        };
-      } catch (error) {
-        console.warn(`Failed to check backup for mod ${mod.modId}:`, error);
+      if (modPaths.length === 0) {
+        setModBackups(new Map());
+        setBackupDates(new Map());
+        return;
       }
-      return null;
-    });
 
-    const results = await Promise.all(backupChecks);
-    const backupMap = new Map<string, boolean>();
-    const datesMap = new Map<string, Date>();
-    results.forEach(result => {
-      if (result) {
-        backupMap.set(result.modId, result.hasBackup);
-        if (result.backupDate) {
-          datesMap.set(result.modId, result.backupDate);
+      // Call Tauri command to check all backups at once
+      const results = await invoke<Record<string, { hasBackup: boolean; backupDate?: number; backupPath?: string }>>("check_backups", {
+        modPaths,
+        backupDirectory: settings.backupDirectory || undefined
+      });
+
+      // Build maps from results
+      const backupMap = new Map<string, boolean>();
+      const datesMap = new Map<string, Date>();
+      
+      // Match results to mods by modPath
+      mods.forEach(mod => {
+        if (mod.modPath && results[mod.modPath]) {
+          const data = results[mod.modPath];
+          backupMap.set(mod.modId, data.hasBackup);
+          if (data.backupDate) {
+            datesMap.set(mod.modId, new Date(data.backupDate * 1000)); // Convert seconds to milliseconds
+          }
         }
-      }
-    });
-    setModBackups(backupMap);
-    setBackupDates(datesMap);
+      });
+      
+      setModBackups(backupMap);
+      setBackupDates(datesMap);
+    } catch (error) {
+      console.warn("Failed to check backups:", error);
+      // On error, clear backups
+      setModBackups(new Map());
+      setBackupDates(new Map());
+    }
   }, [mods, modsPath, settings.backupDirectory]);
 
   // Check backup availability for mods
