@@ -132,13 +132,20 @@ impl SteamApi {
             return Ok(vec![]);
         }
 
-        // Fetch details for all mods in collection
-        let mut all_details = Vec::new();
-        for mod_id in mod_ids {
-            if let Ok(detail) = self.get_file_details(&mod_id).await {
-                all_details.push(detail);
+        // Fetch details for all mods in collection using batch query
+        let all_details = match crate::backend::mod_query::query_mod_batch(&mod_ids, 0).await {
+            Ok(details) => details,
+            Err(_) => {
+                // Fallback to individual queries if batch fails
+                let mut fallback_details = Vec::new();
+                for mod_id in &mod_ids {
+                    if let Ok(detail) = self.get_file_details(mod_id).await {
+                        fallback_details.push(detail);
+                    }
+                }
+                fallback_details
             }
-        }
+        };
 
         // Cache the result
         self.collection_details_cache.set(cache_key, all_details.clone(), None);
@@ -147,7 +154,7 @@ impl SteamApi {
     }
 
     /// Scrape collection page to extract mod IDs
-    async fn scrape_collection_mod_ids(&mut self, collection_id: &str) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    pub async fn scrape_collection_mod_ids(&mut self, collection_id: &str) -> Result<Vec<String>, Box<dyn std::error::Error>> {
         let workshop_url = format!("https://steamcommunity.com/sharedfiles/filedetails/?id={}", collection_id);
         
         let page_html = self.scraping_rate_limiter.execute(|| async {

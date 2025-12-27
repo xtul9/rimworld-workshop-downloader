@@ -469,22 +469,39 @@ export default function DownloadTab() {
         return { modId, isCollection, details: detailsMap[modId] };
       });
 
-      // Get collection details for collections
-      const collectionDetailsPromises = collectionChecks
+      // Get collection details for collections (batch)
+      const collectionIds = collectionChecks
         .filter(check => check.isCollection && check.details)
-        .map(async (check) => {
-          try {
-            const files = await invoke<any[]>("get_collection_details", {
-              modId: check.modId
-            });
-            return { modId: check.modId, files };
-          } catch {
-            return { modId: check.modId, files: [] };
+        .map(check => check.modId);
+      
+      let collectionDetailsMap = new Map<string, any[]>();
+      
+      if (collectionIds.length > 0) {
+        try {
+          const collectionDetailsBatch = await invoke<Record<string, any[]>>("get_collection_details_batch", {
+            collectionIds: collectionIds
+          });
+          
+          for (const [collectionId, files] of Object.entries(collectionDetailsBatch)) {
+            collectionDetailsMap.set(collectionId, files);
           }
-        });
-
-      const collectionDetails = await Promise.all(collectionDetailsPromises);
-      const collectionDetailsMap = new Map(collectionDetails.map(cd => [cd.modId, cd.files]));
+        } catch {
+          // Fallback to individual queries if batch fails
+          const collectionDetailsPromises = collectionIds.map(async (collectionId) => {
+            try {
+              const files = await invoke<any[]>("get_collection_details", {
+                collectionId: collectionId
+              });
+              return { modId: collectionId, files };
+            } catch {
+              return { modId: collectionId, files: [] };
+            }
+          });
+          
+          const collectionDetails = await Promise.all(collectionDetailsPromises);
+          collectionDetailsMap = new Map(collectionDetails.map(cd => [cd.modId, cd.files]));
+        }
+      }
 
       // Update all inputs with results
       setModInputs(prev => {

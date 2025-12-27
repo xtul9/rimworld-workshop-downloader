@@ -252,6 +252,7 @@ pub fn run() {
             commands::is_collection,
             commands::is_collection_batch,
             commands::get_collection_details,
+            commands::get_collection_details_batch,
             commands::download_mod,
         ])
         .setup(|app| {

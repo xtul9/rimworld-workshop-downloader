@@ -922,6 +922,52 @@ pub async fn get_collection_details(collection_id: String) -> Result<Vec<serde_j
         .collect())
 }
 
+/// Get collection details for multiple collections (optimized batch version)
+#[tauri::command]
+pub async fn get_collection_details_batch(
+    collection_ids: Vec<String>,
+) -> Result<serde_json::Value, String> {
+    if collection_ids.is_empty() {
+        return Ok(serde_json::json!({}));
+    }
+    
+    // Remove duplicates
+    let unique_ids: Vec<String> = collection_ids.iter()
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .cloned()
+        .collect();
+    
+    // Fetch collection details in parallel (each call checks cache first via SteamApi::get_collection_details)
+    let mut collection_futures = Vec::new();
+    for collection_id in &unique_ids {
+        let collection_id_clone = collection_id.clone();
+        let future = async move {
+            let steam_api = get_steam_api();
+            let mut api = steam_api.lock().await;
+            match api.get_collection_details(&collection_id_clone).await {
+                Ok(details) => (collection_id_clone, details),
+                Err(_) => (collection_id_clone, vec![]),
+            }
+        };
+        collection_futures.push(future);
+    }
+    
+    let collection_results = futures::future::join_all(collection_futures).await;
+    
+    // Build result map: collection_id -> array of mod details
+    let mut result_map = serde_json::Map::new();
+    for (collection_id, details) in collection_results {
+        let collection_mods: Vec<serde_json::Value> = details.into_iter()
+            .map(|d| serde_json::to_value(d).unwrap())
+            .collect();
+        
+        result_map.insert(collection_id, serde_json::Value::Array(collection_mods));
+    }
+    
+    Ok(serde_json::Value::Object(result_map))
+}
+
 /// Download mod(s) from Steam Workshop
 #[tauri::command]
 pub async fn download_mod(
