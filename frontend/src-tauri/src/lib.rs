@@ -209,23 +209,6 @@ fn stop_node_backend() {
 }
 
 #[tauri::command]
-async fn greet(name: &str) -> Result<String, String> {
-    // Call the Node.js backend API
-    let client = reqwest::Client::new();
-    let url = format!("http://localhost:5000/api/mod/greet?name={}", name);
-    
-    match client.get(&url).send().await {
-        Ok(response) => {
-            match response.json::<serde_json::Value>().await {
-                Ok(json) => Ok(json["message"].as_str().unwrap_or("No message").to_string()),
-                Err(e) => Err(format!("Failed to parse response: {}", e)),
-            }
-        }
-        Err(e) => Err(format!("Failed to call backend: {}", e)),
-    }
-}
-
-#[tauri::command]
 fn open_devtools(app: tauri::AppHandle) {
     // Open devtools for the main window
     // Requires "devtools" feature to be enabled in Cargo.toml
@@ -256,7 +239,6 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_devtools::init())
         .invoke_handler(tauri::generate_handler![
-            greet,
             open_devtools,
             commands::query_mods,
             commands::update_mods,
