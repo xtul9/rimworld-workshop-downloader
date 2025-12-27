@@ -157,6 +157,17 @@
   border-color: #f57c00;
 }
 
+.mod-item.selected.no-details {
+  background-color: #fff3e0;
+  border-color: #3498db;
+  border-style: solid;
+}
+
+.mod-item.selected.no-details:hover {
+  background-color: #ffe0b2;
+  border-color: #2980b9;
+}
+
 .mod-item-header {
   display: flex;
   justify-content: space-between;
@@ -335,6 +346,17 @@
 .dark .mod-item.no-details:hover {
     background-color: #4d3f2e;
     border-color: #f57c00;
+  }
+
+.dark .mod-item.selected.no-details {
+    background-color: #3d2f1e;
+    border-color: #3498db;
+    border-style: solid;
+  }
+
+.dark .mod-item.selected.no-details:hover {
+    background-color: #4d3f2e;
+    border-color: #2980b9;
   }
 
 .dark .mod-no-info-badge {
