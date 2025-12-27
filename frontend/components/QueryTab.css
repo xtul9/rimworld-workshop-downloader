@@ -300,6 +300,32 @@
   gap: 15px;
 }
 
+.updating-details-indicator {
+  color: #ff9800;
+  font-style: italic;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.updating-details-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid #ff9800;
+  margin-left: 8px;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .updated-count {
   color: #28a745;
   font-weight: 500;

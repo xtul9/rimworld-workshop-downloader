@@ -1,5 +1,5 @@
 use crate::backend::{
-    mod_query::{query_mods_for_updates, BaseMod},
+    mod_query::{query_mods_for_updates, BaseMod, update_mod_details as update_mod_details_query},
     mod_updater::ModUpdater,
     downloader::Downloader,
     steam_api::SteamApi,
@@ -46,7 +46,7 @@ pub async fn query_mods(
         .map_err(|e| format!("Failed to query mods: {}", e))
 }
 
-/// List all installed mods in mods folder
+/// List all installed mods in mods folder (fast version - returns immediately with local data only)
 #[tauri::command]
 pub async fn list_installed_mods(
     mods_path: String,
@@ -64,6 +64,17 @@ pub async fn list_installed_mods(
     list_installed_mods_query(&path)
         .await
         .map_err(|e| format!("Failed to list installed mods: {}", e))
+}
+
+/// Update mod details from Steam API in background
+/// This should be called after list_installed_mods to fetch details from API
+#[tauri::command]
+pub async fn update_mod_details(
+    mods: Vec<BaseMod>,
+) -> Result<Vec<BaseMod>, String> {
+    update_mod_details_query(mods)
+        .await
+        .map_err(|e| format!("Failed to update mod details: {}", e))
 }
 
 /// Update mods

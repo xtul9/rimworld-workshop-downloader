@@ -22,6 +22,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::query_mods,
             commands::list_installed_mods,
+            commands::update_mod_details,
             commands::update_mods,
             commands::check_backup,
             commands::check_backups,

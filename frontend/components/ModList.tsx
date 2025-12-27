@@ -42,6 +42,7 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
   // Handle different property names between contexts
   const isQuerying = useInstalledModsContext ? installedModsContext.isLoading : modsContext.isQuerying;
   const hasQueried = useInstalledModsContext ? installedModsContext.hasLoaded : modsContext.hasQueried;
+  const isUpdatingDetails = useInstalledModsContext ? installedModsContext.isUpdatingDetails : false;
   const { settings } = useSettings();
   const { openModal } = useModal();
   const { showContextMenu } = useContextMenu();
@@ -485,7 +486,16 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
                       <div className="mod-item-header">
                         <span className="mod-name">{mod.details?.title || mod.folder || mod.modId}</span>
                         <div className="mod-badges">
-                          {!mod.details && <span className="mod-no-info-badge" title="No mod information available (mod may be banned or unpublished)">⚠️ No info</span>}
+                          {!mod.details && (
+                            <span 
+                              className="mod-no-info-badge" 
+                              title={isUpdatingDetails 
+                                ? "Mod details are still being fetched from Steam Workshop!" 
+                                : "No mod information available (mod may be banned or unpublished)"}
+                            >
+                              ⚠️ No info
+                            </span>
+                          )}
                           {mod.updated && <span className="mod-updated-badge">Updated</span>}
                         </div>
                       </div>

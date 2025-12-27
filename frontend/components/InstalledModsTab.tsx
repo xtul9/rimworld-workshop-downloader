@@ -13,6 +13,7 @@ export default function InstalledModsTab() {
     mods,
     isLoading,
     isUpdating,
+    isUpdatingDetails,
     error,
     hasLoaded,
     loadInstalledMods,
@@ -171,6 +172,12 @@ export default function InstalledModsTab() {
                 ) : mods.length > 0 ? (
                   <>
                     Installed mods: {mods.length}
+                    {isUpdatingDetails && (
+                      <span className="updating-details-indicator">
+                        <span className="updating-details-spinner"></span>
+                        <span> (updating details...)</span>
+                      </span>
+                    )}
                     {mods.filter(m => m.updated).length > 0 && (
                       <span className="updated-count"> ({mods.filter(m => m.updated).length} updated)</span>
                     )}

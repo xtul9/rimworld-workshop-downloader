@@ -8,6 +8,7 @@ interface InstalledModsContextType {
   setMods: (mods: BaseMod[] | ((prev: BaseMod[]) => BaseMod[])) => void;
   isLoading: boolean;
   isUpdating: boolean;
+  isUpdatingDetails: boolean;
   error: string | null;
   updatingMods: Set<string>;
   hasLoaded: boolean;
@@ -25,6 +26,7 @@ export function InstalledModsProvider({ children }: { children: ReactNode }) {
   const [mods, setMods] = useState<BaseMod[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
+  const [isUpdatingDetails, setIsUpdatingDetails] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [updatingMods, setUpdatingMods] = useState<Set<string>>(new Set());
   const [hasLoaded, setHasLoaded] = useState(false);
@@ -45,17 +47,35 @@ export function InstalledModsProvider({ children }: { children: ReactNode }) {
     setHasLoaded(false);
     
     try {
-      // Call Tauri command to list all installed mods
+      // Call Tauri command to list all installed mods (fast version - returns immediately with local data)
       const mods = await invoke<BaseMod[]>("list_installed_mods", {
         modsPath: modsPath
       });
       
-      console.log(`[INSTALLED_MODS] Received ${mods.length} mods from Rust backend`);
+      console.log(`[INSTALLED_MODS] Received ${mods.length} mods from Rust backend (fast load)`);
       
-      // Always update the mods list with new query results
+      // Always update the mods list with new query results (may not have details yet)
       setMods(mods);
       setError(null);
       setHasLoaded(true);
+      
+      // Start updating details in background if there are mods without details
+      if (mods.length > 0 && mods.some(m => !m.details)) {
+        setIsUpdatingDetails(true);
+        
+        // Update details in background (non-blocking)
+        invoke<BaseMod[]>("update_mod_details", { mods })
+          .then((updatedMods) => {
+            console.log(`[INSTALLED_MODS] Updated details for ${updatedMods.length} mods`);
+            setMods(updatedMods);
+            setIsUpdatingDetails(false);
+          })
+          .catch((error) => {
+            console.error("Failed to update mod details:", error);
+            // Don't set error here - mods are already loaded, just without details
+            setIsUpdatingDetails(false);
+          });
+      }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       console.error("Failed to load installed mods:", error);
@@ -174,6 +194,7 @@ export function InstalledModsProvider({ children }: { children: ReactNode }) {
         setMods,
         isLoading,
         isUpdating,
+        isUpdatingDetails,
         error,
         updatingMods,
         hasLoaded,

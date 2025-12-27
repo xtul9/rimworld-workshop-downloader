@@ -519,8 +519,9 @@ pub async fn query_mods_for_updates(
     Ok(mods_with_updates)
 }
 
-/// List all installed mods in mods folder without checking for updates
-pub async fn list_installed_mods(
+/// List all installed mods quickly with only local data (no API calls)
+/// This returns immediately with mod_id, folder, mod_path, and local metadata
+pub fn list_installed_mods_fast(
     mods_path: &Path,
 ) -> Result<Vec<BaseMod>, Box<dyn std::error::Error>> {
     // Check if mods path exists
@@ -548,7 +549,7 @@ pub async fn list_installed_mods(
         return Ok(vec![]);
     }
 
-    // Query mod IDs from each folder
+    // Query mod IDs from each folder and collect local data
     let mut mods: Vec<BaseMod> = Vec::new();
 
     for folder in folders {
@@ -557,31 +558,42 @@ pub async fn list_installed_mods(
                 .and_then(|n| n.to_str())
                 .map(|s| s.to_string());
             
+            // Get local metadata (folder size, last updated time)
+            // Note: We don't populate details here - that will be done in background
             mods.push(BaseMod {
                 mod_id: mod_id.clone(),
                 mod_path: folder.to_string_lossy().to_string(),
                 folder: folder_name,
-                details: None,
+                details: None, // Will be populated by update_mod_details later
                 updated: None,
             });
         }
     }
 
+    Ok(mods)
+}
+
+/// Update mod details from Steam API in background
+/// This function fetches details for given mod IDs and returns updated BaseMod objects
+pub async fn update_mod_details(
+    mods: Vec<BaseMod>,
+) -> Result<Vec<BaseMod>, Box<dyn std::error::Error>> {
     if mods.is_empty() {
         return Ok(vec![]);
     }
 
     // Query mods in batches of 50
     const BATCH_COUNT: usize = 50;
+    let mut updated_mods = mods;
 
     // Create batches and query them in parallel (with small delays to avoid rate limiting)
     let mut batch_futures = Vec::new();
-    let num_batches = (mods.len() + BATCH_COUNT - 1) / BATCH_COUNT;
+    let num_batches = (updated_mods.len() + BATCH_COUNT - 1) / BATCH_COUNT;
     
     for batch_idx in 0..num_batches {
         let start = batch_idx * BATCH_COUNT;
-        let end = std::cmp::min(start + BATCH_COUNT, mods.len());
-        let mod_ids: Vec<String> = mods[start..end].iter().map(|m| m.mod_id.clone()).collect();
+        let end = std::cmp::min(start + BATCH_COUNT, updated_mods.len());
+        let mod_ids: Vec<String> = updated_mods[start..end].iter().map(|m| m.mod_id.clone()).collect();
         let mod_indices = (start..end).collect::<Vec<usize>>();
         
         // Add delay between starting batches to avoid rate limiting
@@ -608,8 +620,8 @@ pub async fn list_installed_mods(
                 
                 // Update mods with details
                 for idx in mod_indices {
-                    if let Some(detail) = details_map.get(&mods[idx].mod_id) {
-                        mods[idx].details = Some(detail.clone());
+                    if let Some(detail) = details_map.get(&updated_mods[idx].mod_id) {
+                        updated_mods[idx].details = Some(detail.clone());
                     }
                 }
             }
@@ -619,8 +631,16 @@ pub async fn list_installed_mods(
         }
     }
 
-    // Return all mods (including those without details)
-    Ok(mods)
+    Ok(updated_mods)
+}
+
+/// List all installed mods in mods folder without checking for updates
+/// This function now uses the fast version and returns immediately
+pub async fn list_installed_mods(
+    mods_path: &Path,
+) -> Result<Vec<BaseMod>, Box<dyn std::error::Error>> {
+    // Use fast version that returns immediately with local data only
+    list_installed_mods_fast(mods_path)
 }
 
 #[cfg(test)]
