@@ -146,7 +146,7 @@ export function InstalledModsProvider({ children }: { children: ReactNode }) {
         .filter(m => !existingModIds.has(m.modId))
         .map(m => ({
           modId: m.modId,
-          title: m.details?.title || m.modId
+          title: m.details?.title || m.folder || m.modId
         }));
       
       // Migrate old format (string[]) to new format (IgnoredMod[])

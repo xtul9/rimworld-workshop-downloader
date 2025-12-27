@@ -47,8 +47,8 @@ export default function InstalledModsTab() {
     // Then sort
     const sorted = [...result].sort((a, b) => {
       if (sortBy === "name") {
-        const nameA = a.details?.title || a.modId || "";
-        const nameB = b.details?.title || b.modId || "";
+        const nameA = a.details?.title || a.folder || a.modId || "";
+        const nameB = b.details?.title || b.folder || b.modId || "";
         const comparison = nameA.localeCompare(nameB, undefined, { sensitivity: "base" });
         return sortOrder === "asc" ? comparison : -comparison;
       } else {

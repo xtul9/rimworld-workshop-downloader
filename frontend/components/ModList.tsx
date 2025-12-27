@@ -456,7 +456,7 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
                     height: `${parseInt(style.height as string) - 8}px`,
                     marginBottom: "8px",
                   }}
-                  className={`mod-item ${selectedMods.has(mod.modId) ? "selected" : ""} ${mod.updated ? "updated" : ""} ${isUpdating ? "updating" : ""}`}
+                  className={`mod-item ${selectedMods.has(mod.modId) ? "selected" : ""} ${mod.updated ? "updated" : ""} ${isUpdating ? "updating" : ""} ${!mod.details ? "no-details" : ""}`}
                   onClick={(e) => !isUpdating && handleSelectMod(mod.modId, e.ctrlKey || e.metaKey, e.shiftKey, index)}
                   onContextMenu={(e) => !isUpdating && handleContextMenu(e, mod)}
                 >
@@ -464,25 +464,28 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
                     <div className="mod-item-updating">
                       <div className="mod-updating-spinner"></div>
                       <div className="mod-updating-text">Update in progress...</div>
-                      <div className="mod-updating-name">{mod.details?.title || mod.modId}</div>
+                      <div className="mod-updating-name">{mod.details?.title || mod.folder || mod.modId}</div>
                     </div>
                   ) : (
                     <>
                       <div className="mod-item-header">
-                        <span className="mod-name">{mod.details?.title || mod.modId}</span>
-                        {mod.updated && <span className="mod-updated-badge">Updated</span>}
+                        <span className="mod-name">{mod.details?.title || mod.folder || mod.modId}</span>
+                        <div className="mod-badges">
+                          {!mod.details && <span className="mod-no-info-badge" title="No mod information available (mod may be banned or unpublished)">⚠️ No info</span>}
+                          {mod.updated && <span className="mod-updated-badge">Updated</span>}
+                        </div>
                       </div>
                       <div className="mod-item-details">
                         <div className="mod-detail">
                           <span className="mod-detail-label">ID:</span>
                           <span className="mod-detail-value">{mod.modId}</span>
                         </div>
-                        <div className="mod-detail">
-                          <span className="mod-detail-label">Folder:</span>
-                          <span className="mod-detail-value">{mod.folder || mod.modPath}</span>
-                        </div>
                         {mod.details && (
                           <>
+                            <div className="mod-detail">
+                              <span className="mod-detail-label">Folder:</span>
+                              <span className="mod-detail-value">{mod.folder || mod.modPath}</span>
+                            </div>
                             <div className="mod-detail">
                               <span className="mod-detail-label">Size:</span>
                               <span className="mod-detail-value">{formatSize(mod.details.file_size)}</span>

@@ -146,11 +146,30 @@
   opacity: 0.8;
 }
 
+.mod-item.no-details {
+  background-color: #fff3e0;
+  border-color: #ff9800;
+  border-style: dashed;
+}
+
+.mod-item.no-details:hover {
+  background-color: #ffe0b2;
+  border-color: #f57c00;
+}
+
 .mod-item-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
   margin-bottom: 8px;
+  gap: 8px;
+}
+
+.mod-badges {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-shrink: 0;
 }
 
 .mod-name {
@@ -166,6 +185,16 @@
   border-radius: 12px;
   font-size: 11px;
   font-weight: 500;
+}
+
+.mod-no-info-badge {
+  padding: 2px 8px;
+  background-color: #ff9800;
+  color: white;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
 }
 
 .mod-item-details {
@@ -295,6 +324,22 @@
 .dark .mod-item.updating {
     background-color: #3d2f00;
     border-color: #ffc107;
+  }
+
+.dark .mod-item.no-details {
+    background-color: #3d2f1e;
+    border-color: #ff9800;
+    border-style: dashed;
+  }
+
+.dark .mod-item.no-details:hover {
+    background-color: #4d3f2e;
+    border-color: #f57c00;
+  }
+
+.dark .mod-no-info-badge {
+    background-color: #ff9800;
+    color: white;
   }
 
 .dark .mod-updating-text {

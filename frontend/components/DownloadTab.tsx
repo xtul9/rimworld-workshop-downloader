@@ -755,7 +755,7 @@ export default function DownloadTab() {
           <div className="downloaded-mods-list">
             {downloadedMods.map((mod) => (
               <div key={mod.modId} className="downloaded-mod-item">
-                <span className="mod-name">{mod.details?.title || mod.modId}</span>
+                <span className="mod-name">{mod.details?.title || mod.folder || mod.modId}</span>
                 <div className="mod-actions">
                   <button onClick={() => window.open(`https://steamcommunity.com/sharedfiles/filedetails/?id=${mod.modId}`, "_blank")}>
                     Workshop
