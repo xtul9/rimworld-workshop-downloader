@@ -3,7 +3,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { BaseMod } from "../types";
 import { useModsPath } from "../contexts/ModsPathContext";
 import { useFormatting } from "../hooks/useFormatting";
-import { API_BASE_URL } from "../utils/api";
+import { invoke } from "@tauri-apps/api/core";
 import "./DownloadTab.css";
 
 interface ModInput {
@@ -116,18 +116,21 @@ export default function DownloadTab() {
       }
 
       try {
-        // Fetch mod details
-        const detailsResponse = await fetch(`${API_BASE_URL}/workshop/file-details?id=${modId}`);
-        const details = await detailsResponse.json();
+        // Call Tauri command to get mod details
+        const details = await invoke<any>("get_file_details", {
+          modId: modId
+        });
 
         if (details.result === 1) {
           // Check if it's a collection
-          const isCollectionResponse = await fetch(`${API_BASE_URL}/workshop/is-collection?id=${modId}`);
-          const isCollection = await isCollectionResponse.json();
+          const isCollection = await invoke<{ isCollection: boolean }>("is_collection", {
+            modId: modId
+          });
 
           if (isCollection.isCollection) {
-            const filesResponse = await fetch(`${API_BASE_URL}/workshop/collection-details?id=${modId}`);
-            const files = await filesResponse.json();
+            const files = await invoke<any[]>("get_collection_details", {
+              modId: modId
+            });
 
             setModInputs(prev => {
               const updated = prev.map(input => 
@@ -242,16 +245,29 @@ export default function DownloadTab() {
 
         try {
           if (mod.isCollection && mod.collectionMods) {
-            // Download collection
-            for (const file of mod.collectionMods) {
-              await downloadMod(file, modsPath);
+            // Download collection - fetch all details in batch
+            const collectionModIds = mod.collectionMods.map((f: any) => f.publishedfileid || f.modId).filter(Boolean);
+            if (collectionModIds.length > 0) {
+              const detailsMap = await invoke<Record<string, any>>("get_file_details_batch", {
+                modIds: collectionModIds
+              });
+              
+              // Download each mod in collection
+              for (const file of mod.collectionMods) {
+                const modId = file.publishedfileid || file.modId;
+                if (modId && detailsMap[modId] && detailsMap[modId] !== null) {
+                  await downloadMod(detailsMap[modId], modsPath);
+                }
+              }
             }
           } else if (mod.modId) {
-            // Download single mod
-            const detailsResponse = await fetch(`${API_BASE_URL}/workshop/file-details?id=${mod.modId}`);
-            const details = await detailsResponse.json();
+            // Download single mod - use batch for consistency (even for single mod)
+            const detailsMap = await invoke<Record<string, any>>("get_file_details_batch", {
+              modIds: [mod.modId]
+            });
             
-            if (details.result === 1) {
+            const details = detailsMap[mod.modId];
+            if (details && details !== null && details.result === 1) {
               await downloadMod(details, modsPath);
             } else {
               throw new Error("Invalid mod");
@@ -289,20 +305,23 @@ export default function DownloadTab() {
 
   const downloadMod = async (details: any, modsPath: string) => {
     try {
-      const response = await fetch(`${API_BASE_URL}/workshop/download`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          modId: details.publishedfileid,
-          title: details.title,
-          modsPath: modsPath
-        })
+      // Call Tauri command to download mod
+      const result = await invoke<{ modId: string; modPath: string; folder: string }>("download_mod", {
+        modId: details.publishedfileid,
+        title: details.title,
+        modsPath: modsPath
       });
-
-      if (response.ok) {
-        const mod: BaseMod = await response.json();
-        setDownloadedMods(prev => [...prev, mod]);
-      }
+      
+      // Convert result to BaseMod format
+      const mod: BaseMod = {
+        modId: result.modId,
+        modPath: result.modPath,
+        folder: result.folder,
+        details: details,
+        updated: undefined
+      };
+      
+      setDownloadedMods(prev => [...prev, mod]);
     } catch (error) {
       console.error("Failed to download mod:", error);
       throw error;
@@ -330,7 +349,7 @@ export default function DownloadTab() {
     await openUrl("https://steamcommunity.com/app/294100/workshop/");
   };
 
-  const handleImportMods = () => {
+  const handleImportMods = async () => {
     if (!importText.trim()) {
       alert("Please paste a list of mod URLs or IDs");
       return;
@@ -389,19 +408,26 @@ export default function DownloadTab() {
     const urlsToImport = [...modUrls];
     setImportText("");
 
-    // Add new inputs for each mod URL
+    // Extract all mod IDs from URLs
+    const modIds = urlsToImport.map(url => extractModId(url)).filter((id): id is string => !!id);
+    
+    if (modIds.length === 0) {
+      return;
+    }
+
+    // Create new inputs for imported mods with unique IDs
+    const baseTime = Date.now();
+    const newInputs: ModInput[] = urlsToImport.map((url, index) => ({
+      id: `import-${baseTime}-${index}`,
+      value: url,
+      status: "loading" as const
+    }));
+
+    // Add new inputs to state first
     setModInputs(prev => {
       // Remove empty inputs except keep at least one empty input at the end
       const filtered = prev.filter(input => input.value.trim() !== "");
       
-      // Create new inputs for imported mods with unique IDs
-      const baseTime = Date.now();
-      const newInputs: ModInput[] = urlsToImport.map((url, index) => ({
-        id: `import-${baseTime}-${index}`,
-        value: url,
-        status: "loading" as const
-      }));
-
       // Add new inputs and ensure there's at least one empty input at the end
       const updated = [...filtered, ...newInputs];
       
@@ -411,17 +437,138 @@ export default function DownloadTab() {
         updated.push({ id: `empty-${Date.now()}`, value: "", status: "empty" as const });
       }
 
-      // Process each imported URL after state is updated
-      // Use setTimeout to ensure state update is complete
-      setTimeout(() => {
-        newInputs.forEach((newInput) => {
-          // handleInputChange will use the updated state through setModInputs callbacks
-          handleInputChange(newInput.id, newInput.value);
-        });
-      }, 50);
-
       return updated;
     });
+
+    // Fetch all mod details in batch
+    try {
+      const detailsMap = await invoke<Record<string, any>>("get_file_details_batch", {
+        modIds: modIds
+      });
+
+      // Process results and check collections
+      const modIdToInputId = new Map<string, string>();
+      newInputs.forEach((input) => {
+        const modId = extractModId(input.value);
+        if (modId) {
+          modIdToInputId.set(modId, input.id);
+        }
+      });
+
+      // Check which mods are collections (batch)
+      const collectionChecksMap = await invoke<Record<string, { isCollection: boolean }>>("is_collection_batch", {
+        modIds: modIds
+      });
+      
+      const collectionChecks = modIds.map((modId) => {
+        if (!detailsMap[modId] || detailsMap[modId] === null) {
+          return { modId, isCollection: false, details: null };
+        }
+        const check = collectionChecksMap[modId];
+        const isCollection = check?.isCollection || false;
+        return { modId, isCollection, details: detailsMap[modId] };
+      });
+
+      // Get collection details for collections (batch)
+      const collectionIds = collectionChecks
+        .filter(check => check.isCollection && check.details)
+        .map(check => check.modId);
+      
+      let collectionDetailsMap = new Map<string, any[]>();
+      
+      if (collectionIds.length > 0) {
+        try {
+          const collectionDetailsBatch = await invoke<Record<string, any[]>>("get_collection_details_batch", {
+            collectionIds: collectionIds
+          });
+          
+          for (const [collectionId, files] of Object.entries(collectionDetailsBatch)) {
+            collectionDetailsMap.set(collectionId, files);
+          }
+        } catch {
+          // Fallback to individual queries if batch fails
+          const collectionDetailsPromises = collectionIds.map(async (collectionId) => {
+            try {
+              const files = await invoke<any[]>("get_collection_details", {
+                collectionId: collectionId
+              });
+              return { modId: collectionId, files };
+            } catch {
+              return { modId: collectionId, files: [] };
+            }
+          });
+          
+          const collectionDetails = await Promise.all(collectionDetailsPromises);
+          collectionDetailsMap = new Map(collectionDetails.map(cd => [cd.modId, cd.files]));
+        }
+      }
+
+      // Update all inputs with results
+      setModInputs(prev => {
+        return prev.map(input => {
+          const modId = extractModId(input.value);
+          if (!modId || !modIdToInputId.has(modId)) {
+            return input;
+          }
+
+          const details = detailsMap[modId];
+          if (!details || details === null) {
+            return {
+              ...input,
+              status: "error" as const,
+              error: "Invalid mod"
+            };
+          }
+
+          if (details.result !== 1) {
+            return {
+              ...input,
+              status: "error" as const,
+              error: "Invalid mod"
+            };
+          }
+
+          const check = collectionChecks.find(c => c.modId === modId);
+          const isCollection = check?.isCollection || false;
+
+          if (isCollection) {
+            const files = collectionDetailsMap.get(modId) || [];
+            return {
+              ...input,
+              modId,
+              title: details.title,
+              isCollection: true,
+              collectionMods: files,
+              status: "ready" as const
+            };
+          } else {
+            return {
+              ...input,
+              modId,
+              title: details.title,
+              size: details.file_size,
+              status: "ready" as const
+            };
+          }
+        });
+      });
+    } catch (error) {
+      console.error("Failed to fetch mod details:", error);
+      // Mark all imported inputs as error
+      setModInputs(prev => {
+        return prev.map(input => {
+          const modId = extractModId(input.value);
+          if (modId && modIds.includes(modId)) {
+            return {
+              ...input,
+              status: "error" as const,
+              error: "Error fetching information"
+            };
+          }
+          return input;
+        });
+      });
+    }
   };
 
   const readyModsCount = modInputs.filter(m => m.status === "ready").length;

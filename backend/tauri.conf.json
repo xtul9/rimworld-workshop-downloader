@@ -4,10 +4,10 @@
   "version": "0.2.8",
   "identifier": "com.rimworld.modupdater",
   "build": {
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
-    "frontendDist": "../dist"
+    "beforeBuildCommand": "",
+    "frontendDist": "../frontend/dist"
   },
   "app": {
     "windows": [
@@ -35,8 +35,7 @@
     ],
     "resources": [],
     "externalBin": [
-      "../../backend/bin/rimworld-workshop-downloader-backend",
-      "../../backend/bin/steamcmd/steamcmd"
+      "../bin/steamcmd/steamcmd"
     ]
   }
 }

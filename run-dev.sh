@@ -2,7 +2,7 @@
 
 # Script to run the project in development mode
 
-echo "Starting Rimworld Mod Updater in development mode..."
+echo "Starting Rimworld Workshop Downloader in development mode..."
 echo ""
 
 # Load Cargo (Rust) environment if it exists
@@ -29,14 +29,6 @@ if ! pkg-config --exists glib-2.0 2>/dev/null; then
     echo "Install system dependencies for Tauri (see README.md)"
 fi
 
-# Check and install backend dependencies if needed
-if [ ! -d "backend/node_modules" ]; then
-    echo "Installing backend dependencies..."
-    cd backend
-    npm install
-    cd ..
-fi
-
 # Check and install frontend dependencies if needed
 if [ ! -d "frontend/node_modules" ]; then
     echo "Installing frontend dependencies..."
@@ -45,22 +37,18 @@ if [ ! -d "frontend/node_modules" ]; then
     cd ..
 fi
 
-# Start Node.js backend in background but keep output visible
-echo "Starting Node.js backend..."
-cd backend
-npm run dev > ../backend.log 2>&1 &
-BACKEND_PID=$!
+# Start frontend dev server in background
+echo "Starting frontend dev server..."
+cd frontend
+npm run dev > ../frontend.log 2>&1 &
+FRONTEND_PID=$!
 cd ..
-echo "Backend PID: $BACKEND_PID"
-echo "Backend logs are being written to: backend.log"
-echo "You can tail the logs with: tail -f backend.log"
+echo "Frontend dev server PID: $FRONTEND_PID"
+echo "Frontend logs are being written to: frontend.log"
 echo ""
 
-# Wait a moment for backend to start
+# Wait a moment for frontend to start
 sleep 3
-
-# Start Tauri frontend
-echo "Starting Tauri frontend..."
 
 # Configure Wayland environment variables before starting Tauri
 if [ "$XDG_SESSION_TYPE" = "wayland" ]; then
@@ -72,10 +60,12 @@ if [ "$XDG_SESSION_TYPE" = "wayland" ]; then
     export WEBKIT_DISABLE_DMABUF_RENDERER=1
 fi
 
-cd frontend
-npm run tauri dev
+# Start Tauri application
+echo "Starting Tauri application..."
+cd backend
+npx --prefix ../frontend tauri dev
 
-# After completion, stop backend
-echo "Stopping backend..."
-kill $BACKEND_PID 2>/dev/null
+# After completion, stop frontend
+echo "Stopping frontend dev server..."
+kill $FRONTEND_PID 2>/dev/null
 

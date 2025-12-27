@@ -1,5 +1,4 @@
 import { useState, useEffect } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import QueryTab from "./components/QueryTab";
 import DownloadTab from "./components/DownloadTab";
 import SettingsTab from "./components/SettingsTab";
@@ -19,31 +18,6 @@ function AppContent() {
   const { modalType, modalData } = useModal();
   const [activeTab, setActiveTab] = useState<"query" | "download" | "settings">("query");
   const [initialTabSet, setInitialTabSet] = useState(false);
-  
-  // Set up keyboard shortcut to open devtools (F12 or Ctrl+Shift+I)
-  useEffect(() => {
-    const handleKeyDown = async (event: KeyboardEvent) => {
-      // F12 or Ctrl+Shift+I (or Cmd+Option+I on Mac)
-      if (
-        event.key === "F12" ||
-        (event.ctrlKey && event.shiftKey && event.key === "I") ||
-        (event.metaKey && event.altKey && event.key === "I")
-      ) {
-        event.preventDefault();
-        try {
-          await invoke("open_devtools");
-          console.log("Developer tools opened");
-        } catch (error) {
-          console.error("Failed to open developer tools:", error);
-        }
-      }
-    };
-
-    window.addEventListener("keydown", handleKeyDown);
-    return () => {
-      window.removeEventListener("keydown", handleKeyDown);
-    };
-  }, []);
   
   // Set initial tab based on isFirstRun after settings load
   useEffect(() => {

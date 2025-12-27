@@ -52,8 +52,8 @@ cd "$SCRIPT_DIR"
 
 # Files to update
 FILES=(
-    "frontend/src-tauri/tauri.conf.json"
-    "frontend/src-tauri/Cargo.toml"
+    "backend/tauri.conf.json"
+    "backend/Cargo.toml"
     "frontend/package.json"
 )
 

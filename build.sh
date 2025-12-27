@@ -4,7 +4,7 @@
 
 set -e
 
-echo "Building Rimworld Mod Updater for production..."
+echo "Building Rimworld Workshop Downloader for production..."
 echo ""
 
 # Load Cargo (Rust) environment if it exists
@@ -19,39 +19,30 @@ if ! command -v cargo &> /dev/null; then
     exit 1
 fi
 
-# Build backend
-echo "Building Node.js backend..."
-cd backend
-# Install all dependencies (including devDependencies for TypeScript and pkg)
-npm install
-# Build TypeScript to JavaScript
-npm run build
-
 # Download SteamCMD for current platform
 echo "Downloading SteamCMD for current platform..."
-npm run build:steamcmd
-
-# Build sidecar binaries (only for current platform to save time)
-echo "Building sidecar binary for current platform (this may take a while)..."
-echo "Note: For other platforms, build on those platforms or use CI/CD"
-npm run build:sidecar
+cd scripts
+cargo build --release --bin download_steamcmd
+./target/release/download_steamcmd
 cd ..
 
 # Build frontend
 echo "Building Tauri frontend..."
 cd frontend
 npm run build
+cd ..
 
 # Build Tauri application (bundles backend automatically)
 echo "Bundling Tauri application..."
-npm run tauri build
+cd backend
+npx --prefix ../frontend tauri build
 
 echo ""
-echo "Build complete! Output files are in: frontend/src-tauri/target/release/bundle/"
+echo "Build complete! Output files are in: backend/target/release/bundle/"
 echo ""
 echo "Built packages:"
-echo "  - .deb: frontend/src-tauri/target/release/bundle/deb/"
-echo "  - .rpm: frontend/src-tauri/target/release/bundle/rpm/"
+echo "  - .deb: backend/target/release/bundle/deb/"
+echo "  - .rpm: backend/target/release/bundle/rpm/"
 echo ""
 echo "Note: AppImage build was skipped due to linuxdeploy issues."
 echo "You can install the .deb or .rpm package instead."
