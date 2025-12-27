@@ -146,7 +146,7 @@ export function ModsProvider({ children }: { children: ReactNode }) {
       const updatedModIds = new Set(updated.map((u: BaseMod) => u.modId));
       setMods(prev => prev.filter(m => !updatedModIds.has(m.modId)));
       
-      if (updated.length === 0 && updatingMods.size > 0) {
+      if (updated.length === 0 && modIdsToUpdate.size > 0) {
         setError('No mods were updated. Check backend logs for details.');
       } else {
         setError(null);

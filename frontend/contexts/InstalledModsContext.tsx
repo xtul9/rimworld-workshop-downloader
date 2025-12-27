@@ -165,7 +165,7 @@ export function InstalledModsProvider({ children }: { children: ReactNode }) {
       // In Installed Mods tab, mods should stay in the list after update
       // Events have already removed them from updatingMods set
       
-      if (updated.length === 0 && updatingMods.size > 0) {
+      if (updated.length === 0 && modIdsToUpdate.size > 0) {
         setError('No mods were updated. Check backend logs for details.');
       } else {
         setError(null);
