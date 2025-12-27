@@ -8,6 +8,7 @@ use crate::backend::mod_query::list_installed_mods as list_installed_mods_query;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use tokio::sync::Mutex;
+use tauri::{AppHandle, Emitter};
 
 // Shared instances for stateful services
 static STEAM_API: OnceLock<Arc<Mutex<SteamApi>>> = OnceLock::new();
@@ -80,6 +81,7 @@ pub async fn update_mod_details(
 /// Update mods
 #[tauri::command]
 pub async fn update_mods(
+    app: AppHandle,
     mods: Vec<BaseMod>,
     backup_mods: bool,
     backup_directory: Option<String>,
@@ -98,13 +100,27 @@ pub async fn update_mods(
     // Prepare mods for download
     let mod_ids: Vec<String> = mods.iter().map(|m| m.mod_id.clone()).collect();
     
-    // Download mods
+    // Build mod sizes map for load balancing
+    let mod_sizes: std::collections::HashMap<String, u64> = mods
+        .iter()
+        .filter_map(|m| {
+            m.details.as_ref().map(|d| (m.mod_id.clone(), d.file_size))
+        })
+        .collect();
+    
+    // Download mods with size information for load balancing
     let downloader = get_downloader();
     let (downloaded_mods, download_path) = {
         let mut dl = downloader.lock().await;
         let download_path = dl.download_path().clone();
-        let downloaded_mods = dl.download_mods(&mod_ids).await
-            .map_err(|e| format!("Failed to download mods: {}", e))?;
+        let downloaded_mods = if mod_sizes.is_empty() {
+            // No size information available, use simple download
+            dl.download_mods(&mod_ids, Some(&app)).await
+        } else {
+            // Use size-based load balancing
+            dl.download_mods_with_sizes(&mod_ids, Some(&mod_sizes), Some(&app)).await
+        }
+        .map_err(|e| format!("Failed to download mods: {}", e))?;
         (downloaded_mods, download_path)
     };
     
@@ -141,6 +157,7 @@ pub async fn update_mods(
         let download_path_clone = download_path.clone();
         let mods_path_clone = mods_path.clone();
         let backup_dir_clone = backup_directory.as_ref().map(|s| PathBuf::from(s));
+        let app_clone = app.clone();
         
         // Spawn update task for each mod
         let future = async move {
@@ -189,10 +206,24 @@ pub async fn update_mods(
                     // Wait for all .lastupdated files to be written
                     futures::future::join_all(update_file_futures).await;
                     
+                    // Emit event for successfully updated mod
+                    let _ = app_clone.emit("mod-updated", serde_json::json!({
+                        "modId": mod_id,
+                        "success": true,
+                    }));
+                    
                     (mod_id, Ok(updated_path))
                 }
                 Err(e) => {
                     eprintln!("[UPDATE_MODS] Error updating mod {}: {}", mod_id, e);
+                    
+                    // Emit event for failed mod update
+                    let _ = app_clone.emit("mod-updated", serde_json::json!({
+                        "modId": mod_id,
+                        "success": false,
+                        "error": e.to_string(),
+                    }));
+                    
                     (mod_id, Err(e))
                 }
             }
@@ -1183,7 +1214,7 @@ pub async fn download_mod(
     let mod_id_for_download = mod_id.clone();
     let downloader_for_download = get_downloader();
     let mut dl_guard = downloader_for_download.lock().await;
-    let downloaded_mods_result = dl_guard.download_mods(&[mod_id_for_download]).await;
+    let downloaded_mods_result = dl_guard.download_mods(&[mod_id_for_download], None).await;
     drop(dl_guard); // Release lock before await
     
     let downloaded_mods = match downloaded_mods_result {

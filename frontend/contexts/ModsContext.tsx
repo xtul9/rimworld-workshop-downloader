@@ -1,5 +1,6 @@
-import { createContext, useContext, useState, ReactNode } from "react";
+import { createContext, useContext, useState, ReactNode, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { BaseMod } from "../types";
 import { useSettings } from "./SettingsContext";
 
@@ -10,6 +11,7 @@ interface ModsContextType {
   isUpdating: boolean;
   error: string | null;
   updatingMods: Set<string>;
+  downloadedMods: Set<string>;
   hasQueried: boolean;
   queryMods: (modsPath: string) => Promise<void>;
   updateMods: (modsToUpdate: BaseMod[]) => Promise<void>;
@@ -27,8 +29,55 @@ export function ModsProvider({ children }: { children: ReactNode }) {
   const [isUpdating, setIsUpdating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [updatingMods, setUpdatingMods] = useState<Set<string>>(new Set());
+  const [downloadedMods, setDownloadedMods] = useState<Set<string>>(new Set());
   const [hasQueried, setHasQueried] = useState(false);
   const { updateSetting, settings } = useSettings();
+
+  // Listen for real-time download and update events
+  useEffect(() => {
+    let unlistenDownloaded: (() => void) | undefined;
+    let unlistenUpdated: (() => void) | undefined;
+
+    const setupListeners = async () => {
+      // Listen for mod-downloaded events
+      unlistenDownloaded = await listen<{ modId: string }>("mod-downloaded", (event) => {
+        const modId = event.payload.modId;
+        console.log(`[EVENT] Mod downloaded: ${modId}`);
+        setDownloadedMods(prev => new Set([...prev, modId]));
+      });
+
+      // Listen for mod-updated events
+      unlistenUpdated = await listen<{ modId: string; success: boolean; error?: string }>("mod-updated", (event) => {
+        const { modId, success, error } = event.payload;
+        console.log(`[EVENT] Mod updated: ${modId}, success: ${success}`);
+        
+        if (success) {
+          // Remove mod from list immediately when updated
+          setMods(prev => prev.filter(m => m.modId !== modId));
+          setUpdatingMods(prev => {
+            const newSet = new Set(prev);
+            newSet.delete(modId);
+            return newSet;
+          });
+        } else {
+          // Handle error - keep mod in list but mark as failed
+          console.error(`[EVENT] Mod update failed: ${modId}, error: ${error}`);
+          setUpdatingMods(prev => {
+            const newSet = new Set(prev);
+            newSet.delete(modId);
+            return newSet;
+          });
+        }
+      });
+    };
+
+    setupListeners().catch(console.error);
+
+    return () => {
+      unlistenDownloaded?.();
+      unlistenUpdated?.();
+    };
+  }, []);
 
   const queryMods = async (modsPath: string) => {
     if (isQuerying) return;
@@ -78,12 +127,13 @@ export function ModsProvider({ children }: { children: ReactNode }) {
     setIsUpdating(true);
     setError(null);
     
-    // Mark mods as updating
+    // Mark mods as updating and clear downloaded mods set
     const modIdsToUpdate = new Set(modsToUpdate.map(m => m.modId));
     setUpdatingMods(modIdsToUpdate);
+    setDownloadedMods(new Set());
     
     try {
-      // Call Tauri command instead of fetch
+      // Call Tauri command - events will update UI in real-time
       const updated = await invoke<BaseMod[]>("update_mods", {
         mods: modsToUpdate,
         backupMods: settings.backupMods || false,
@@ -92,13 +142,13 @@ export function ModsProvider({ children }: { children: ReactNode }) {
       
       console.log(`[UPDATE] Received ${updated.length} updated mod(s) from Rust backend`);
       
-      if (updated.length === 0) {
+      // Remove any remaining mods that weren't removed by events
+      const updatedModIds = new Set(updated.map((u: BaseMod) => u.modId));
+      setMods(prev => prev.filter(m => !updatedModIds.has(m.modId)));
+      
+      if (updated.length === 0 && updatingMods.size > 0) {
         setError('No mods were updated. Check backend logs for details.');
       } else {
-        const updatedModIds = new Set(updated.map((u: BaseMod) => u.modId));
-        
-        // Remove successfully updated mods from the list
-        setMods(prev => prev.filter(m => !updatedModIds.has(m.modId)));
         setError(null);
       }
     } catch (error) {
@@ -108,6 +158,7 @@ export function ModsProvider({ children }: { children: ReactNode }) {
     } finally {
       setIsUpdating(false);
       setUpdatingMods(new Set());
+      setDownloadedMods(new Set());
     }
   };
 
@@ -185,6 +236,7 @@ export function ModsProvider({ children }: { children: ReactNode }) {
         ignoreFromList,
         ignoreThisUpdate,
         ignorePermanently,
+        downloadedMods,
       }}
     >
       {children}

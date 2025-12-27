@@ -1,5 +1,6 @@
-import { createContext, useContext, useState, ReactNode } from "react";
+import { createContext, useContext, useState, ReactNode, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { BaseMod } from "../types";
 import { useSettings } from "./SettingsContext";
 
@@ -11,6 +12,7 @@ interface InstalledModsContextType {
   isUpdatingDetails: boolean;
   error: string | null;
   updatingMods: Set<string>;
+  downloadedMods: Set<string>;
   hasLoaded: boolean;
   loadInstalledMods: (modsPath: string) => Promise<void>;
   updateMods: (modsToUpdate: BaseMod[]) => Promise<void>;
@@ -29,6 +31,7 @@ export function InstalledModsProvider({ children }: { children: ReactNode }) {
   const [isUpdatingDetails, setIsUpdatingDetails] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [updatingMods, setUpdatingMods] = useState<Set<string>>(new Set());
+  const [downloadedMods, setDownloadedMods] = useState<Set<string>>(new Set());
   const [hasLoaded, setHasLoaded] = useState(false);
   const { updateSetting, settings } = useSettings();
 
@@ -87,18 +90,70 @@ export function InstalledModsProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  // Listen for real-time download and update events
+  useEffect(() => {
+    let unlistenDownloaded: (() => void) | undefined;
+    let unlistenUpdated: (() => void) | undefined;
+
+    const setupListeners = async () => {
+      // Listen for mod-downloaded events
+      unlistenDownloaded = await listen<{ modId: string }>("mod-downloaded", (event) => {
+        const modId = event.payload.modId;
+        console.log(`[EVENT] Mod downloaded: ${modId}`);
+        setDownloadedMods(prev => new Set([...prev, modId]));
+      });
+
+      // Listen for mod-updated events
+      unlistenUpdated = await listen<{ modId: string; success: boolean; error?: string }>("mod-updated", (event) => {
+        const { modId, success, error } = event.payload;
+        console.log(`[EVENT] Mod updated: ${modId}, success: ${success}`);
+        
+        if (success) {
+          // In Installed Mods tab, mods should stay in the list after update
+          // Just remove from updating set to stop showing progress
+          setUpdatingMods(prev => {
+            const newSet = new Set(prev);
+            newSet.delete(modId);
+            return newSet;
+          });
+          setDownloadedMods(prev => {
+            const newSet = new Set(prev);
+            newSet.delete(modId);
+            return newSet;
+          });
+        } else {
+          // Handle error
+          console.error(`[EVENT] Mod update failed: ${modId}, error: ${error}`);
+          setUpdatingMods(prev => {
+            const newSet = new Set(prev);
+            newSet.delete(modId);
+            return newSet;
+          });
+        }
+      });
+    };
+
+    setupListeners().catch(console.error);
+
+    return () => {
+      unlistenDownloaded?.();
+      unlistenUpdated?.();
+    };
+  }, []);
+
   const updateMods = async (modsToUpdate: BaseMod[]) => {
     if (modsToUpdate.length === 0) return;
     
     setIsUpdating(true);
     setError(null);
     
-    // Mark mods as updating
+    // Mark mods as updating and clear downloaded mods set
     const modIdsToUpdate = new Set(modsToUpdate.map(m => m.modId));
     setUpdatingMods(modIdsToUpdate);
+    setDownloadedMods(new Set());
     
     try {
-      // Call Tauri command instead of fetch
+      // Call Tauri command - events will update UI in real-time
       const updated = await invoke<BaseMod[]>("update_mods", {
         mods: modsToUpdate,
         backupMods: settings.backupMods || false,
@@ -107,16 +162,12 @@ export function InstalledModsProvider({ children }: { children: ReactNode }) {
       
       console.log(`[UPDATE] Received ${updated.length} updated mod(s) from Rust backend`);
       
-      if (updated.length === 0) {
+      // In Installed Mods tab, mods should stay in the list after update
+      // Events have already removed them from updatingMods set
+      
+      if (updated.length === 0 && updatingMods.size > 0) {
         setError('No mods were updated. Check backend logs for details.');
       } else {
-        // Refresh the mods list after update
-        // Reload installed mods to get fresh data
-        const firstMod = modsToUpdate[0];
-        if (firstMod.modPath) {
-          const modsPath = firstMod.modPath.substring(0, firstMod.modPath.lastIndexOf('/'));
-          await loadInstalledMods(modsPath);
-        }
         setError(null);
       }
     } catch (error) {
@@ -126,6 +177,7 @@ export function InstalledModsProvider({ children }: { children: ReactNode }) {
     } finally {
       setIsUpdating(false);
       setUpdatingMods(new Set());
+      setDownloadedMods(new Set());
     }
   };
 
@@ -178,8 +230,8 @@ export function InstalledModsProvider({ children }: { children: ReactNode }) {
       
       await updateSetting("ignoredMods", newIgnored);
       
-      // Remove from list after successful ignore
-      setMods(prev => prev.filter(m => !modsToIgnore.some(ignored => ignored.modId === m.modId)));
+      // In Installed Mods tab, mods should stay in the list even after being ignored
+      // They will just be filtered out in Query & Update tab
     } catch (error) {
       console.error("Failed to ignore permanently:", error);
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -197,6 +249,7 @@ export function InstalledModsProvider({ children }: { children: ReactNode }) {
         isUpdatingDetails,
         error,
         updatingMods,
+        downloadedMods,
         hasLoaded,
         loadInstalledMods,
         updateMods,

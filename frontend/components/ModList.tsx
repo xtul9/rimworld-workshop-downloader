@@ -30,7 +30,8 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
   const { 
     mods: contextMods, 
     error, 
-    updatingMods, 
+    updatingMods,
+    downloadedMods,
     ignoreFromList, 
     ignoreThisUpdate, 
     ignorePermanently 
@@ -244,11 +245,11 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
       
       // Only show "Hide for now" in Query & Update tab
       if (!useInstalledModsContext) {
-        items.push({ label: "Hide for now", action: "ignore-from-list" });
+        items.push({ label: "Hide for now", action: "ignore-from-list" });        
+        items.push({ label: "Ignore this update", action: "ignore-this-update" });
       }
       
       items.push(
-        { label: "Ignore this update", action: "ignore-this-update" },
         { label: "Ignore mods completely", action: "ignore-permanently" }
       );
     } else {
@@ -463,6 +464,7 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
             {({ index, style }) => {
               const mod = mods[index];
               const isUpdating = updatingMods.has(mod.modId);
+              const isDownloaded = downloadedMods?.has(mod.modId) || false;
               
               return (
                 <div
@@ -478,7 +480,9 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
                   {isUpdating ? (
                     <div className="mod-item-updating">
                       <div className="mod-updating-spinner"></div>
-                      <div className="mod-updating-text">Update in progress...</div>
+                      <div className="mod-updating-text">
+                        {isDownloaded ? "Installing..." : "Downloading..."}
+                      </div>
                       <div className="mod-updating-name">{mod.details?.title || mod.folder || mod.modId}</div>
                     </div>
                   ) : (
