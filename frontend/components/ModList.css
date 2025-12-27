@@ -566,3 +566,61 @@
   background-color: #2980b9;
 }
 
+.cancel-button {
+  padding: 10px 20px;
+  border: none;
+  border-radius: 4px;
+  background-color: #95a5a6;
+  color: white;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  transition: background-color 0.2s;
+}
+
+.cancel-button:hover:not(:disabled) {
+  background-color: #7f8c8d;
+}
+
+.cancel-button:disabled {
+  background-color: #bdc3c7;
+  cursor: not-allowed;
+}
+
+.force-update-button {
+  padding: 10px 20px;
+  border: none;
+  border-radius: 4px;
+  background-color: #e74c3c;
+  color: white;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  transition: background-color 0.2s;
+}
+
+.force-update-button:hover:not(:disabled) {
+  background-color: #c0392b;
+}
+
+.force-update-button:disabled {
+  background-color: #bdc3c7;
+  cursor: not-allowed;
+}
+
+.dark .cancel-button {
+  background-color: #555;
+}
+
+.dark .cancel-button:hover:not(:disabled) {
+  background-color: #666;
+}
+
+.dark .force-update-button {
+  background-color: #e74c3c;
+}
+
+.dark .force-update-button:hover:not(:disabled) {
+  background-color: #c0392b;
+}
+

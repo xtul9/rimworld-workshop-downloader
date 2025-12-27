@@ -2,12 +2,15 @@ import { useState, useEffect } from "react";
 import QueryTab from "./components/QueryTab";
 import DownloadTab from "./components/DownloadTab";
 import SettingsTab from "./components/SettingsTab";
+import InstalledModsTab from "./components/InstalledModsTab";
 import { ModsPathProvider, useModsPath } from "./contexts/ModsPathContext";
 import { ModsProvider } from "./contexts/ModsContext";
+import { InstalledModsProvider } from "./contexts/InstalledModsContext";
 import { SettingsProvider, useSettings } from "./contexts/SettingsContext";
 import { ModalProvider, useModal } from "./contexts/ModalContext";
 import { ContextMenuProvider } from "./contexts/ContextMenuContext";
 import RestoreBackupModal from "./components/RestoreBackupModal";
+import ForceUpdateAllModal from "./components/ForceUpdateAllModal";
 import ContextMenu from "./components/ContextMenu";
 import { Theme } from "./utils/settingsStorage";
 import "./App.css";
@@ -16,7 +19,7 @@ function AppContent() {
   const { error } = useModsPath();
   const { settings, isLoading } = useSettings();
   const { modalType, modalData } = useModal();
-  const [activeTab, setActiveTab] = useState<"query" | "download" | "settings">("query");
+  const [activeTab, setActiveTab] = useState<"query" | "download" | "installed" | "settings">("query");
   const [initialTabSet, setInitialTabSet] = useState(false);
   
   // Set initial tab based on isFirstRun after settings load
@@ -64,6 +67,12 @@ function AppContent() {
           Query & Update
         </button>
         <button
+          className={`tab-button ${activeTab === "installed" ? "active" : ""}`}
+          onClick={() => setActiveTab("installed")}
+        >
+          Installed Mods
+        </button>
+        <button
           className={`tab-button ${activeTab === "download" ? "active" : ""}`}
           onClick={() => setActiveTab("download")}
         >
@@ -86,6 +95,8 @@ function AppContent() {
 
         {activeTab === "query" && <QueryTab />}
 
+        {activeTab === "installed" && <InstalledModsTab />}
+
         {activeTab === "download" && <DownloadTab />}
 
         {activeTab === "settings" && <SettingsTab />}
@@ -99,7 +110,14 @@ function AppContent() {
           onRestoreComplete={modalData.onRestoreComplete}
           error={modalData.error}
         />
-        )}
+      )}
+      {modalType === "force-update-all" && modalData && (
+        <ForceUpdateAllModal
+          modsCount={modalData.modsCount}
+          totalSize={modalData.totalSize}
+          onConfirm={modalData.onConfirm}
+        />
+      )}
 
       {/* Global Context Menu */}
       <ContextMenu />
@@ -114,7 +132,9 @@ function App() {
         <ContextMenuProvider>
           <ModsPathProvider>
             <ModsProvider>
-              <AppContent />
+              <InstalledModsProvider>
+                <AppContent />
+              </InstalledModsProvider>
             </ModsProvider>
           </ModsPathProvider>
         </ContextMenuProvider>

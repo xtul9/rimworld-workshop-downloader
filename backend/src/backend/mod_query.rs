@@ -157,6 +157,38 @@ pub fn query_mod_id(mod_path: &Path) -> Result<Option<String>, Box<dyn std::erro
     }
 }
 
+/// Check if mod has ignored update (has .ignoredupdate file)
+/// Returns the timestamp from .ignoredupdate file if it exists
+pub fn get_ignored_update_timestamp(mod_path: &Path) -> Result<Option<i64>, Box<dyn std::error::Error>> {
+    let about_path = mod_path.join("About");
+    let ignore_update_path = about_path.join(".ignoredupdate");
+    
+    match fs::read_to_string(&ignore_update_path) {
+        Ok(content) => {
+            let trimmed = content.trim();
+            if !trimmed.is_empty() {
+                match trimmed.parse::<i64>() {
+                    Ok(timestamp) if timestamp > 0 => {
+                        return Ok(Some(timestamp));
+                    }
+                    Ok(_) | Err(_) => {
+                        // Invalid timestamp, remove the file
+                        let _ = fs::remove_file(&ignore_update_path);
+                        return Ok(None);
+                    }
+                }
+            }
+            Ok(None)
+        }
+        Err(_e) if _e.kind() == std::io::ErrorKind::NotFound => {
+            Ok(None)
+        }
+        Err(e) => {
+            Err(format!("Failed to read .ignoredupdate file: {}", e).into())
+        }
+    }
+}
+
 /// Get mod's last updated time
 /// Checks for .lastupdated file first, then falls back to PublishedFileId.txt creation time
 pub fn get_mod_last_updated_time(mod_path: &Path) -> Result<std::time::SystemTime, Box<dyn std::error::Error>> {
@@ -422,6 +454,7 @@ pub async fn query_mods_for_updates(
         .collect();
     
     // Check last updated times in parallel using spawn_blocking
+    // Also check if update is ignored via .ignoredupdate file
     let mut check_futures = Vec::new();
     for (_idx, mod_ref, details) in &mods_to_check {
         let mod_path = PathBuf::from(&mod_ref.mod_path);
@@ -429,15 +462,40 @@ pub async fn query_mods_for_updates(
         let mod_id = mod_ref.mod_id.clone();
         
         let future = tokio::task::spawn_blocking(move || {
-            let remote_date = std::time::UNIX_EPOCH + std::time::Duration::from_secs(time_updated as u64);
-            match get_mod_last_updated_time(&mod_path) {
-                Ok(last_updated_date) => {
-                    let time_diff_seconds = remote_date.duration_since(last_updated_date)
-                        .unwrap_or_default()
-                        .as_secs() as f64;
+            // First check if update is ignored
+            match get_ignored_update_timestamp(&mod_path) {
+                Ok(Some(ignored_timestamp)) => {
+                    // Update is ignored - check if remote timestamp is newer than ignored timestamp
+                    let time_diff_seconds = (time_updated as i64 - ignored_timestamp) as f64;
+                    // If remote is newer, mod needs update (ignore was for older version)
                     Some((mod_id, time_diff_seconds > 1.0))
                 }
-                Err(_) => None,
+                Ok(None) => {
+                    // No ignored update, check normally
+                    let remote_date = std::time::UNIX_EPOCH + std::time::Duration::from_secs(time_updated as u64);
+                    match get_mod_last_updated_time(&mod_path) {
+                        Ok(last_updated_date) => {
+                            let time_diff_seconds = remote_date.duration_since(last_updated_date)
+                                .unwrap_or_default()
+                                .as_secs() as f64;
+                            Some((mod_id, time_diff_seconds > 1.0))
+                        }
+                        Err(_) => None,
+                    }
+                }
+                Err(_) => {
+                    // Error checking ignored update, fall back to normal check
+                    let remote_date = std::time::UNIX_EPOCH + std::time::Duration::from_secs(time_updated as u64);
+                    match get_mod_last_updated_time(&mod_path) {
+                        Ok(last_updated_date) => {
+                            let time_diff_seconds = remote_date.duration_since(last_updated_date)
+                                .unwrap_or_default()
+                                .as_secs() as f64;
+                            Some((mod_id, time_diff_seconds > 1.0))
+                        }
+                        Err(_) => None,
+                    }
+                }
             }
         });
         check_futures.push(future);
@@ -459,6 +517,110 @@ pub async fn query_mods_for_updates(
     
     let mods_with_updates: Vec<BaseMod> = mods_with_updates_map.into_values().collect();
     Ok(mods_with_updates)
+}
+
+/// List all installed mods in mods folder without checking for updates
+pub async fn list_installed_mods(
+    mods_path: &Path,
+) -> Result<Vec<BaseMod>, Box<dyn std::error::Error>> {
+    // Check if mods path exists
+    let metadata = std::fs::metadata(mods_path)?;
+    if !metadata.is_dir() {
+        return Err(format!("Mods path is not a directory: {:?}", mods_path).into());
+    }
+
+    // Get all folders in mods directory
+    let entries = std::fs::read_dir(mods_path)?;
+    let folders: Vec<PathBuf> = entries
+        .filter_map(|entry| {
+            entry.ok().and_then(|e| {
+                let path = e.path();
+                if path.is_dir() {
+                    Some(path)
+                } else {
+                    None
+                }
+            })
+        })
+        .collect();
+
+    if folders.is_empty() {
+        return Ok(vec![]);
+    }
+
+    // Query mod IDs from each folder
+    let mut mods: Vec<BaseMod> = Vec::new();
+
+    for folder in folders {
+        if let Some(mod_id) = query_mod_id(&folder)? {
+            let folder_name = folder.file_name()
+                .and_then(|n| n.to_str())
+                .map(|s| s.to_string());
+            
+            mods.push(BaseMod {
+                mod_id: mod_id.clone(),
+                mod_path: folder.to_string_lossy().to_string(),
+                folder: folder_name,
+                details: None,
+                updated: None,
+            });
+        }
+    }
+
+    if mods.is_empty() {
+        return Ok(vec![]);
+    }
+
+    // Query mods in batches of 50
+    const BATCH_COUNT: usize = 50;
+
+    // Create batches and query them in parallel (with small delays to avoid rate limiting)
+    let mut batch_futures = Vec::new();
+    let num_batches = (mods.len() + BATCH_COUNT - 1) / BATCH_COUNT;
+    
+    for batch_idx in 0..num_batches {
+        let start = batch_idx * BATCH_COUNT;
+        let end = std::cmp::min(start + BATCH_COUNT, mods.len());
+        let mod_ids: Vec<String> = mods[start..end].iter().map(|m| m.mod_id.clone()).collect();
+        let mod_indices = (start..end).collect::<Vec<usize>>();
+        
+        // Add delay between starting batches to avoid rate limiting
+        if batch_idx > 0 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(250 * batch_idx as u64)).await;
+        }
+        
+        // Move mod_ids into the future to avoid lifetime issues
+        let future = async move {
+            query_mod_batch(&mod_ids, 0).await
+        };
+        batch_futures.push((future, mod_indices));
+    }
+    
+    // Wait for all batches and update mods
+    for (batch_future, mod_indices) in batch_futures {
+        match batch_future.await {
+            Ok(details) => {
+                // Create HashMap for O(1) lookup instead of O(n) find()
+                let details_map: std::collections::HashMap<String, WorkshopFileDetails> = details
+                    .into_iter()
+                    .map(|d| (d.publishedfileid.clone(), d))
+                    .collect();
+                
+                // Update mods with details
+                for idx in mod_indices {
+                    if let Some(detail) = details_map.get(&mods[idx].mod_id) {
+                        mods[idx].details = Some(detail.clone());
+                    }
+                }
+            }
+            Err(_e) => {
+                // Failed to query batch, continue with next batch
+            }
+        }
+    }
+
+    // Return all mods (including those without details)
+    Ok(mods)
 }
 
 #[cfg(test)]

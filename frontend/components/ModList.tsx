@@ -3,6 +3,7 @@ import { FixedSizeList as List } from "react-window";
 import { openUrl, revealItemInDir, openPath } from "@tauri-apps/plugin-opener";
 import { BaseMod } from "../types";
 import { useMods } from "../contexts/ModsContext";
+import { useInstalledMods } from "../contexts/InstalledModsContext";
 import { useSettings } from "../contexts/SettingsContext";
 import { useModal } from "../contexts/ModalContext";
 import { useContextMenu, ContextMenuItem } from "../contexts/ContextMenuContext";
@@ -13,13 +14,30 @@ import "./ModList.css";
 interface ModListProps {
   onUpdateSelected: (mods: BaseMod[]) => void;
   modsPath: string;
+  useInstalledModsContext?: boolean;
 }
 
 // Height of each mod item (including margin-bottom)
 const ITEM_HEIGHT = 80; // 72px min-height + 8px margin-bottom
 
-export default function ModList({ onUpdateSelected, modsPath }: ModListProps) {
-  const { mods, isQuerying, error, updatingMods, hasQueried, ignoreFromList, ignoreThisUpdate, ignorePermanently } = useMods();
+export default function ModList({ onUpdateSelected, modsPath, useInstalledModsContext = false }: ModListProps) {
+  const modsContext = useMods();
+  const installedModsContext = useInstalledMods();
+  
+  // Use the appropriate context based on the prop
+  const context = useInstalledModsContext ? installedModsContext : modsContext;
+  const { 
+    mods, 
+    error, 
+    updatingMods, 
+    ignoreFromList, 
+    ignoreThisUpdate, 
+    ignorePermanently 
+  } = context;
+  
+  // Handle different property names between contexts
+  const isQuerying = useInstalledModsContext ? installedModsContext.isLoading : modsContext.isQuerying;
+  const hasQueried = useInstalledModsContext ? installedModsContext.hasLoaded : modsContext.hasQueried;
   const { settings } = useSettings();
   const { openModal } = useModal();
   const { showContextMenu } = useContextMenu();
@@ -28,6 +46,7 @@ export default function ModList({ onUpdateSelected, modsPath }: ModListProps) {
   const [lastSelectedIndex, setLastSelectedIndex] = useState<number | null>(null);
   const [modBackups, setModBackups] = useState<Map<string, boolean>>(new Map());
   const [backupDates, setBackupDates] = useState<Map<string, Date>>(new Map());
+  const [ignoredUpdates, setIgnoredUpdates] = useState<Map<string, boolean>>(new Map());
   const [listHeight, setListHeight] = useState(600);
   const listContainerRef = useRef<HTMLDivElement>(null);
 
@@ -105,6 +124,52 @@ export default function ModList({ onUpdateSelected, modsPath }: ModListProps) {
     checkBackups();
   }, [checkBackups]);
 
+  // Check if mods have ignored updates
+  const checkIgnoredUpdates = useCallback(async () => {
+    if (mods.length === 0 || !modsPath) {
+      setIgnoredUpdates(new Map());
+      return;
+    }
+
+    try {
+      // Collect all mod paths
+      const modPaths = mods
+        .map(mod => mod.modPath)
+        .filter((path): path is string => Boolean(path));
+      
+      if (modPaths.length === 0) {
+        setIgnoredUpdates(new Map());
+        return;
+      }
+
+      // Call Tauri command to check all ignored updates at once
+      const results = await invoke<Record<string, { hasIgnoredUpdate: boolean }>>("check_ignored_updates", {
+        modPaths
+      });
+
+      // Build map from results
+      const ignoredMap = new Map<string, boolean>();
+      
+      // Match results to mods by modPath
+      mods.forEach(mod => {
+        if (mod.modPath && results[mod.modPath]) {
+          const data = results[mod.modPath];
+          ignoredMap.set(mod.modId, data.hasIgnoredUpdate);
+        }
+      });
+      
+      setIgnoredUpdates(ignoredMap);
+    } catch (error) {
+      console.warn("Failed to check ignored updates:", error);
+      setIgnoredUpdates(new Map());
+    }
+  }, [mods, modsPath]);
+
+  // Check ignored updates
+  useEffect(() => {
+    checkIgnoredUpdates();
+  }, [checkIgnoredUpdates]);
+
   const handleSelectMod = useCallback((modId: string, ctrlKey: boolean, shiftKey: boolean, index: number) => {
     setSelectedMods(prev => {
       const newSet = new Set(prev);
@@ -151,6 +216,7 @@ export default function ModList({ onUpdateSelected, modsPath }: ModListProps) {
     const selected = mods.filter(m => selectedMods.has(m.modId));
     const hasBackup = modBackups.get(mod.modId) || false;
     const canRestoreBackup = mod.modPath && settings.backupDirectory && hasBackup;
+    const hasIgnoredUpdate = ignoredUpdates.get(mod.modId) || false;
     
     const items: ContextMenuItem[] = [];
     
@@ -181,6 +247,11 @@ export default function ModList({ onUpdateSelected, modsPath }: ModListProps) {
         { label: "Ignore this update", action: "ignore-this-update" },
         { label: "Ignore mod completely", action: "ignore-permanently" }
       );
+      
+      // Add undo option if mod has ignored update
+      if (hasIgnoredUpdate) {
+        items.push({ label: "Undo ignore this update", action: "undo-ignore-update" });
+      }
     }
     
     showContextMenu(
@@ -189,7 +260,7 @@ export default function ModList({ onUpdateSelected, modsPath }: ModListProps) {
       items,
       handleContextAction
     );
-  }, [mods, selectedMods, modBackups, settings.backupDirectory, showContextMenu]);
+  }, [mods, selectedMods, modBackups, ignoredUpdates, settings.backupDirectory, showContextMenu]);
 
   const handleContextAction = useCallback(async (action: string, data: { mod: BaseMod; selected: BaseMod[] }) => {
     const { mod, selected } = data;
@@ -285,8 +356,20 @@ export default function ModList({ onUpdateSelected, modsPath }: ModListProps) {
           await ignorePermanently([mod]);
         }
         break;
+      case "undo-ignore-update":
+        try {
+          await invoke("undo_ignore_update", {
+            mods: [mod]
+          });
+          // Refresh ignored updates check
+          await checkIgnoredUpdates();
+        } catch (error) {
+          console.error("Failed to undo ignore update:", error);
+          alert(`Failed to undo ignore update: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        break;
     }
-  }, [mods, modBackups, backupDates, settings, openModal, checkBackups, onUpdateSelected, ignoreFromList, ignoreThisUpdate, ignorePermanently]);
+  }, [mods, modBackups, backupDates, settings, openModal, checkBackups, checkIgnoredUpdates, onUpdateSelected, ignoreFromList, ignoreThisUpdate, ignorePermanently]);
 
 
   return (
@@ -294,7 +377,9 @@ export default function ModList({ onUpdateSelected, modsPath }: ModListProps) {
       {isQuerying ? (
         <div className="mod-list-loading">
           <div className="loader-spinner"></div>
-          <div className="loader-text">Querying mods for updates...</div>
+          <div className="loader-text">
+            {useInstalledModsContext ? "Loading installed mods..." : "Querying mods for updates..."}
+          </div>
         </div>
       ) : error ? (
         <div className="mod-list-error">
@@ -304,11 +389,13 @@ export default function ModList({ onUpdateSelected, modsPath }: ModListProps) {
       ) : mods.length === 0 ? (
         <div className="mod-list-empty">
           {hasQueried ? (
-            "All mods are up to date"
+            useInstalledModsContext ? "No mods found" : "All mods are up to date"
           ) : (
             <div className="mod-list-empty-content">
               <div className="mod-list-empty-icon">📋</div>
-              <div className="mod-list-empty-title">No mods queried yet</div>
+              <div className="mod-list-empty-title">
+                {useInstalledModsContext ? "No mods loaded yet" : "No mods queried yet"}
+              </div>
               <div className="mod-list-empty-message">
                 {!modsPath ? (
                   <>
@@ -316,7 +403,11 @@ export default function ModList({ onUpdateSelected, modsPath }: ModListProps) {
                   </>
                 ) : (
                   <>
-                    Click the <strong>"Query Mods"</strong> button above to check for mod updates.
+                    {useInstalledModsContext ? (
+                      <>Click the <strong>"Load Installed Mods"</strong> button above to load all installed mods.</>
+                    ) : (
+                      <>Click the <strong>"Query Mods"</strong> button above to check for mod updates.</>
+                    )}
                   </>
                 )}
               </div>

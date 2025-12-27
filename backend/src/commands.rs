@@ -4,6 +4,7 @@ use crate::backend::{
     downloader::Downloader,
     steam_api::SteamApi,
 };
+use crate::backend::mod_query::list_installed_mods as list_installed_mods_query;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use tokio::sync::Mutex;
@@ -43,6 +44,26 @@ pub async fn query_mods(
     query_mods_for_updates(&path, &ignored_mods)
         .await
         .map_err(|e| format!("Failed to query mods: {}", e))
+}
+
+/// List all installed mods in mods folder
+#[tauri::command]
+pub async fn list_installed_mods(
+    mods_path: String,
+) -> Result<Vec<BaseMod>, String> {
+    let path = PathBuf::from(&mods_path);
+    
+    if !path.exists() {
+        return Err(format!("Mods path does not exist: {}", mods_path));
+    }
+    
+    if !path.is_dir() {
+        return Err(format!("Mods path is not a directory: {}", mods_path));
+    }
+    
+    list_installed_mods_query(&path)
+        .await
+        .map_err(|e| format!("Failed to list installed mods: {}", e))
 }
 
 /// Update mods
@@ -491,7 +512,7 @@ pub async fn restore_backups(
     Ok(serde_json::Value::Object(result_map))
 }
 
-/// Ignore this update - update .lastupdated file with current remote timestamp (optimized)
+/// Ignore this update - create .ignoredupdate file with current remote timestamp (optimized)
 #[tauri::command]
 pub async fn ignore_update(
     mods: Vec<BaseMod>,
@@ -572,11 +593,11 @@ pub async fn ignore_update(
             .await
             .unwrap_or_default();
         
-        // Update .lastupdated files in parallel
+        // Create .ignoredupdate files in parallel
         let mut file_futures = Vec::new();
         for folder_path in all_mod_folders {
             let about_path = folder_path.join("About");
-            let last_updated_path = about_path.join(".lastupdated");
+            let ignore_update_path = about_path.join(".ignoredupdate");
             let time_str = time_updated.to_string();
             
             let future = tokio::task::spawn_blocking(move || {
@@ -584,8 +605,8 @@ pub async fn ignore_update(
                     eprintln!("Failed to create About directory: {}", e);
                     return;
                 }
-                if let Err(e) = std::fs::write(&last_updated_path, time_str) {
-                    eprintln!("Failed to write .lastupdated file: {}", e);
+                if let Err(e) = std::fs::write(&ignore_update_path, time_str) {
+                    eprintln!("Failed to write .ignoredupdate file: {}", e);
                 }
             });
             file_futures.push(future);
@@ -638,6 +659,118 @@ pub async fn ignore_update(
     }
     
     Ok(ignored_mods)
+}
+
+/// Check if mods have .ignoredupdate file (ignored updates)
+#[tauri::command]
+pub async fn check_ignored_updates(
+    mod_paths: Vec<String>,
+) -> Result<serde_json::Value, String> {
+    if mod_paths.is_empty() {
+        return Ok(serde_json::json!({}));
+    }
+    
+    // Check all mods in parallel
+    let mut check_futures = Vec::new();
+    
+    for mod_path in mod_paths {
+        let mod_path_buf = PathBuf::from(&mod_path);
+        let about_path = mod_path_buf.join("About");
+        let ignore_update_path = about_path.join(".ignoredupdate");
+        let mod_path_clone = mod_path.clone();
+        
+        // Spawn blocking task for each check
+        let future = tokio::task::spawn_blocking(move || {
+            ignore_update_path.exists()
+        });
+        
+        check_futures.push((mod_path_clone, future));
+    }
+    
+    // Wait for all checks to complete and build result map
+    let mut results = serde_json::Map::new();
+    for (mod_path, future) in check_futures {
+        match future.await {
+            Ok(has_ignored) => {
+                results.insert(mod_path, serde_json::json!({
+                    "hasIgnoredUpdate": has_ignored
+                }));
+            }
+            Err(_) => {
+                results.insert(mod_path, serde_json::json!({
+                    "hasIgnoredUpdate": false
+                }));
+            }
+        }
+    }
+    
+    Ok(serde_json::Value::Object(results))
+}
+
+/// Undo ignore this update - remove .ignoredupdate file to allow updates again
+#[tauri::command]
+pub async fn undo_ignore_update(
+    mods: Vec<BaseMod>,
+) -> Result<Vec<serde_json::Value>, String> {
+    if mods.is_empty() {
+        return Ok(vec![]);
+    }
+    
+    // Process all mods in parallel
+    let mut undo_futures = Vec::new();
+    
+    for mod_ref in mods {
+        let mod_id = mod_ref.mod_id.clone();
+        let mod_path = PathBuf::from(&mod_ref.mod_path);
+        let mods_path = mod_path.parent()
+            .ok_or_else(|| "Cannot get mods path".to_string())?;
+        
+        let mod_id_clone = mod_id.clone();
+        let mods_path_clone = mods_path.to_path_buf();
+        
+        // Spawn task to remove .ignoredupdate files
+        let future = async move {
+            let all_mod_folders = find_all_mod_folders_with_id(&mods_path_clone, &mod_id_clone)
+                .await
+                .unwrap_or_default();
+            
+            // Remove .ignoredupdate files in parallel
+            let mut file_futures = Vec::new();
+            for folder_path in all_mod_folders {
+                let about_path = folder_path.join("About");
+                let ignore_update_path = about_path.join(".ignoredupdate");
+                
+                let future = tokio::task::spawn_blocking(move || {
+                    if ignore_update_path.exists() {
+                        if let Err(e) = std::fs::remove_file(&ignore_update_path) {
+                            eprintln!("Failed to remove .ignoredupdate file: {}", e);
+                        }
+                    }
+                });
+                file_futures.push(future);
+            }
+            
+            futures::future::join_all(file_futures).await;
+            mod_id_clone
+        };
+        
+        undo_futures.push((mod_id, future));
+    }
+    
+    // Wait for all undo operations to complete
+    let results = futures::future::join_all(undo_futures.into_iter().map(|(mod_id, future)| async move {
+        (mod_id, future.await)
+    })).await;
+    
+    let mut undone_mods = Vec::new();
+    for (mod_id, _) in results {
+        undone_mods.push(serde_json::json!({
+            "modId": mod_id,
+            "undone": true
+        }));
+    }
+    
+    Ok(undone_mods)
 }
 
 /// Get file details from Steam Workshop (optimized - uses batch query internally)
