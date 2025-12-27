@@ -491,59 +491,150 @@ pub async fn restore_backups(
     Ok(serde_json::Value::Object(result_map))
 }
 
-/// Ignore this update - update .lastupdated file with current remote timestamp
+/// Ignore this update - update .lastupdated file with current remote timestamp (optimized)
 #[tauri::command]
 pub async fn ignore_update(
     mods: Vec<BaseMod>,
 ) -> Result<Vec<serde_json::Value>, String> {
+    if mods.is_empty() {
+        return Ok(vec![]);
+    }
+    
     let steam_api = get_steam_api();
-    let mut ignored_mods = Vec::new();
+    
+    // Separate mods with and without details
+    let mut mods_with_details = Vec::new();
+    let mut mods_without_details = Vec::new();
     
     for mod_ref in mods {
-        let time_updated = if let Some(details) = &mod_ref.details {
-            details.time_updated
+        if mod_ref.details.is_some() {
+            mods_with_details.push(mod_ref);
         } else {
-            // Fetch from Steam API
-            let mut api = steam_api.lock().await;
-            match api.get_file_details(&mod_ref.mod_id).await {
-                Ok(details) => details.time_updated,
+            mods_without_details.push(mod_ref);
+        }
+    }
+    
+    // Batch fetch details for mods without details
+    let mut mod_id_to_time_updated: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    if !mods_without_details.is_empty() {
+        let mod_ids: Vec<String> = mods_without_details.iter().map(|m| m.mod_id.clone()).collect();
+        let mut api = steam_api.lock().await;
+        
+        // Query in batches of 50
+        const BATCH_SIZE: usize = 50;
+        for i in (0..mod_ids.len()).step_by(BATCH_SIZE) {
+            let batch_end = std::cmp::min(i + BATCH_SIZE, mod_ids.len());
+            let batch = &mod_ids[i..batch_end];
+            
+            // Use query_mod_batch for efficient batch querying
+            match crate::backend::mod_query::query_mod_batch(batch, 0).await {
+                Ok(details) => {
+                    for detail in details {
+                        mod_id_to_time_updated.insert(detail.publishedfileid, detail.time_updated);
+                    }
+                }
                 Err(_) => {
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_secs() as i64
+                    // If batch query fails, fall back to individual queries
+                    for mod_id in batch {
+                        match api.get_file_details(mod_id).await {
+                            Ok(details) => {
+                                mod_id_to_time_updated.insert(mod_id.clone(), details.time_updated);
+                            }
+                            Err(_) => {
+                                // Fallback to current time
+                                let current_time = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap()
+                                    .as_secs() as i64;
+                                mod_id_to_time_updated.insert(mod_id.clone(), current_time);
+                            }
+                        }
+                    }
                 }
             }
-        };
-        
-        // Find all mod folders with this modId
-        let mod_path_buf = PathBuf::from(&mod_ref.mod_path);
+        }
+    }
+    
+    // Process all mods in parallel
+    let mut ignore_futures = Vec::new();
+    
+    // Helper function to process a single mod
+    async fn process_ignore_mod(
+        mod_id: String,
+        mod_path: String,
+        time_updated: i64,
+    ) -> Result<String, String> {
+        let mod_path_buf = PathBuf::from(&mod_path);
         let mods_path = mod_path_buf.parent()
-            .ok_or("Cannot get mods path")?;
+            .ok_or_else(|| "Cannot get mods path".to_string())?;
         
-        let all_mod_folders = find_all_mod_folders_with_id(mods_path, &mod_ref.mod_id)
+        let all_mod_folders = find_all_mod_folders_with_id(mods_path, &mod_id)
             .await
             .unwrap_or_default();
         
-        // Update .lastupdated file for all folders with this modId
+        // Update .lastupdated files in parallel
+        let mut file_futures = Vec::new();
         for folder_path in all_mod_folders {
             let about_path = folder_path.join("About");
             let last_updated_path = about_path.join(".lastupdated");
+            let time_str = time_updated.to_string();
             
-            if let Err(e) = std::fs::create_dir_all(&about_path) {
-                eprintln!("Failed to create About directory: {}", e);
-                continue;
-            }
-            
-            if let Err(e) = std::fs::write(&last_updated_path, time_updated.to_string()) {
-                eprintln!("Failed to write .lastupdated file: {}", e);
-            }
+            let future = tokio::task::spawn_blocking(move || {
+                if let Err(e) = std::fs::create_dir_all(&about_path) {
+                    eprintln!("Failed to create About directory: {}", e);
+                    return;
+                }
+                if let Err(e) = std::fs::write(&last_updated_path, time_str) {
+                    eprintln!("Failed to write .lastupdated file: {}", e);
+                }
+            });
+            file_futures.push(future);
         }
         
-        ignored_mods.push(serde_json::json!({
-            "modId": mod_ref.mod_id,
-            "ignored": true
-        }));
+        futures::future::join_all(file_futures).await;
+        
+        Ok(mod_id)
+    }
+    
+    for mod_ref in mods_with_details {
+        let mod_id = mod_ref.mod_id.clone();
+        let mod_path = mod_ref.mod_path.clone();
+        let time_updated = mod_ref.details.as_ref().unwrap().time_updated;
+        
+        ignore_futures.push((mod_id.clone(), process_ignore_mod(mod_id, mod_path, time_updated)));
+    }
+    
+    for mod_ref in mods_without_details {
+        let mod_id = mod_ref.mod_id.clone();
+        let mod_path = mod_ref.mod_path.clone();
+        let time_updated = mod_id_to_time_updated.get(&mod_id)
+            .copied()
+            .unwrap_or_else(|| {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs() as i64
+            });
+        
+        ignore_futures.push((mod_id.clone(), process_ignore_mod(mod_id, mod_path, time_updated)));
+    }
+    
+    // Wait for all ignores to complete
+    let results = futures::future::join_all(ignore_futures.into_iter().map(|(mod_id, future)| async move {
+        (mod_id, future.await)
+    })).await;
+    
+    let mut ignored_mods = Vec::new();
+    for (mod_id, result) in results {
+        match result {
+            Ok(_) | Err(_) => {
+                // Always mark as ignored, even if file write failed
+                ignored_mods.push(serde_json::json!({
+                    "modId": mod_id,
+                    "ignored": true
+                }));
+            }
+        }
     }
     
     Ok(ignored_mods)
