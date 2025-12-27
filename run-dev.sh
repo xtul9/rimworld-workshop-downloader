@@ -2,7 +2,7 @@
 
 # Script to run the project in development mode
 
-echo "Starting Rimworld Mod Updater in development mode..."
+echo "Starting Rimworld Workshop Downloader in development mode..."
 echo ""
 
 # Load Cargo (Rust) environment if it exists

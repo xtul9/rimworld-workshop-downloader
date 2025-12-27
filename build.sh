@@ -4,7 +4,7 @@
 
 set -e
 
-echo "Building Rimworld Mod Updater for production..."
+echo "Building Rimworld Workshop Downloader for production..."
 echo ""
 
 # Load Cargo (Rust) environment if it exists
