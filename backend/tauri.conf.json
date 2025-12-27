@@ -4,10 +4,10 @@
   "version": "0.2.8",
   "identifier": "com.rimworld.modupdater",
   "build": {
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
-    "frontendDist": "../dist"
+    "beforeBuildCommand": "bash -c 'FRONTEND_DIR=\"$(cd \"$(dirname \"$TAURI_DIR\")\" && pwd)/frontend\" && cd \"$FRONTEND_DIR\" && npm run build'",
+    "frontendDist": "../frontend/dist"
   },
   "app": {
     "windows": [
@@ -35,7 +35,7 @@
     ],
     "resources": [],
     "externalBin": [
-      "../../bin/steamcmd/steamcmd"
+      "../bin/steamcmd/steamcmd"
     ]
   }
 }

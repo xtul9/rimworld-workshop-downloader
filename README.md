@@ -23,42 +23,44 @@ Desktop application for managing Rimworld mods from Steam Workshop. Built with T
 
 ```
 rimworld-mod-updater-multiplatform/
-├── frontend/                        # Tauri + React frontend
+├── frontend/                        # React frontend
+│   ├── components/                  # React components
+│   │   ├── QueryTab.tsx             # Query & Update tab
+│   │   ├── DownloadTab.tsx          # Download mods tab
+│   │   ├── SettingsTab.tsx          # Settings tab
+│   │   ├── ModList.tsx              # Virtualized mod list
+│   │   ├── ContextMenu.tsx          # Global context menu
+│   │   └── RestoreBackupModal.tsx   # Backup restore modal
+│   ├── contexts/                    # React contexts
+│   │   ├── SettingsContext.tsx      # Application settings
+│   │   ├── ModsContext.tsx          # Mods state management
+│   │   ├── ModsPathContext.tsx      # Mods path management
+│   │   ├── ModalContext.tsx         # Global modal management
+│   │   └── ContextMenuContext.tsx   # Global context menu
+│   ├── utils/                       # Utilities
+│   │   ├── settingsStorage.ts       # Settings persistence
+│   │   └── api.ts                   # API client (Tauri invoke)
+│   ├── main.tsx                     # React entry point
+│   └── package.json                 # Frontend dependencies
+├── backend/                         # Rust (Tauri) backend
 │   ├── src/
-│   │   ├── components/             # React components
-│   │   │   ├── QueryTab.tsx        # Query & Update tab
-│   │   │   ├── DownloadTab.tsx    # Download mods tab
-│   │   │   ├── SettingsTab.tsx     # Settings tab
-│   │   │   ├── ModList.tsx         # Virtualized mod list
-│   │   │   ├── ContextMenu.tsx     # Global context menu
-│   │   │   └── RestoreBackupModal.tsx # Backup restore modal
-│   │   ├── contexts/               # React contexts
-│   │   │   ├── SettingsContext.tsx # Application settings
-│   │   │   ├── ModsContext.tsx     # Mods state management
-│   │   │   ├── ModsPathContext.tsx # Mods path management
-│   │   │   ├── ModalContext.tsx    # Global modal management
-│   │   │   └── ContextMenuContext.tsx # Global context menu
-│   │   └── utils/                  # Utilities
-│   │       ├── settingsStorage.ts   # Settings persistence
-│   │       └── api.ts              # API client (Tauri invoke)
-│   └── src-tauri/                   # Rust (Tauri) backend
-│       ├── src/
-│       │   ├── main.rs              # Tauri entry point
-│       │   ├── lib.rs               # Tauri library
-│       │   ├── commands.rs          # Tauri commands (API)
-│       │   └── backend/             # Rust backend modules
-│       │       ├── mod_query.rs     # Query mods for updates
-│       │       ├── mod_updater.rs   # Update mods logic
-│       │       ├── downloader.rs    # Download mods via SteamCMD
-│       │       ├── steam_api.rs     # Steam API client
-│       │       ├── cache.rs          # API response caching
-│       │       └── rate_limiter.rs  # Rate limiting for API calls
-│       └── tauri.conf.json          # Tauri configuration
-├── scripts/                          # Build scripts
+│   │   ├── main.rs                  # Tauri entry point
+│   │   ├── lib.rs                   # Tauri library
+│   │   ├── commands.rs              # Tauri commands (API)
+│   │   └── backend/                 # Rust backend modules
+│   │       ├── mod_query.rs         # Query mods for updates
+│   │       ├── mod_updater.rs       # Update mods logic
+│   │       ├── downloader.rs        # Download mods via SteamCMD
+│   │       ├── steam_api.rs         # Steam API client
+│   │       ├── cache.rs             # API response caching
+│   │       └── rate_limiter.rs      # Rate limiting for API calls
+│   ├── Cargo.toml                   # Rust dependencies
+│   └── tauri.conf.json              # Tauri configuration
+├── scripts/                         # Build scripts
 │   └── src/
 │       └── main.rs                  # SteamCMD downloader (Rust)
-└── bin/                              # Binary dependencies
-    └── steamcmd/                     # SteamCMD binaries
+└── bin/                             # Binary dependencies
+    └── steamcmd/                    # SteamCMD binaries
 ```
 
 ## Requirements
@@ -225,14 +227,14 @@ The application uses Tauri commands instead of HTTP endpoints:
 
 ### Adding New Tauri Commands
 
-1. Add a new function in `frontend/src-tauri/src/commands.rs` with `#[tauri::command]` attribute
-2. Register the command in `frontend/src-tauri/src/lib.rs` in the `invoke_handler`
+1. Add a new function in `backend/src/commands.rs` with `#[tauri::command]` attribute
+2. Register the command in `backend/src/lib.rs` in the `invoke_handler`
 3. Call the command from the frontend using `invoke()` from `@tauri-apps/api/core`
 
 ### Adding New React Features
 
-1. Edit components in `frontend/src/components/`
-2. Use React contexts in `frontend/src/contexts/` for global state management
+1. Edit components in `frontend/components/`
+2. Use React contexts in `frontend/contexts/` for global state management
 3. Use `invoke()` from `@tauri-apps/api/core` to call Rust backend commands
 4. For Tauri-specific features, use `@tauri-apps/api` or Tauri plugins
 
@@ -260,8 +262,8 @@ The project includes GitHub Actions workflows that automatically build the appli
 To create a new release:
 
 1. **Update the version** in the following files:
-   - `frontend/src-tauri/tauri.conf.json`
-   - `frontend/src-tauri/Cargo.toml`
+   - `backend/tauri.conf.json`
+   - `backend/Cargo.toml`
    - `frontend/package.json`
 
    Or use the provided script:

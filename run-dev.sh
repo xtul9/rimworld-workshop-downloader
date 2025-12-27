@@ -37,8 +37,18 @@ if [ ! -d "frontend/node_modules" ]; then
     cd ..
 fi
 
-# Start Tauri frontend
-echo "Starting Tauri frontend..."
+# Start frontend dev server in background
+echo "Starting frontend dev server..."
+cd frontend
+npm run dev > ../frontend.log 2>&1 &
+FRONTEND_PID=$!
+cd ..
+echo "Frontend dev server PID: $FRONTEND_PID"
+echo "Frontend logs are being written to: frontend.log"
+echo ""
+
+# Wait a moment for frontend to start
+sleep 3
 
 # Configure Wayland environment variables before starting Tauri
 if [ "$XDG_SESSION_TYPE" = "wayland" ]; then
@@ -50,6 +60,12 @@ if [ "$XDG_SESSION_TYPE" = "wayland" ]; then
     export WEBKIT_DISABLE_DMABUF_RENDERER=1
 fi
 
-cd frontend
-npm run tauri dev
+# Start Tauri application
+echo "Starting Tauri application..."
+cd backend
+npx --prefix ../frontend tauri dev
+
+# After completion, stop frontend
+echo "Stopping frontend dev server..."
+kill $FRONTEND_PID 2>/dev/null
 

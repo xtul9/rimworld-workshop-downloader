@@ -30,17 +30,19 @@ cd ..
 echo "Building Tauri frontend..."
 cd frontend
 npm run build
+cd ..
 
 # Build Tauri application (bundles backend automatically)
 echo "Bundling Tauri application..."
-npm run tauri build
+cd backend
+npx --prefix ../frontend tauri build
 
 echo ""
-echo "Build complete! Output files are in: frontend/src-tauri/target/release/bundle/"
+echo "Build complete! Output files are in: backend/target/release/bundle/"
 echo ""
 echo "Built packages:"
-echo "  - .deb: frontend/src-tauri/target/release/bundle/deb/"
-echo "  - .rpm: frontend/src-tauri/target/release/bundle/rpm/"
+echo "  - .deb: backend/target/release/bundle/deb/"
+echo "  - .rpm: backend/target/release/bundle/rpm/"
 echo ""
 echo "Note: AppImage build was skipped due to linuxdeploy issues."
 echo "You can install the .deb or .rpm package instead."

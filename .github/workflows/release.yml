@@ -85,7 +85,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          projectPath: frontend
+          projectPath: backend
           args: --bundles ${{ matrix.bundle-targets }}
 
       - name: Upload artifacts
@@ -93,7 +93,7 @@ jobs:
         with:
           name: ${{ matrix.platform }}-artifacts
           path: |
-            frontend/src-tauri/target/release/bundle/**
+            backend/target/release/bundle/**
           retention-days: 7
           if-no-files-found: error
 
