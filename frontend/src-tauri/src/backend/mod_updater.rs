@@ -48,6 +48,7 @@ impl ModUpdater {
         existing_folder_name: Option<&str>,
         create_backup: bool,
         backup_directory: Option<&Path>,
+        mod_title: Option<&str>,
     ) -> Result<PathBuf, String> {
         // Use existing folder name if provided, otherwise find existing folder with same mod ID, otherwise use mod title
         let folder_name = if let Some(name) = existing_folder_name {
@@ -62,8 +63,25 @@ impl ModUpdater {
                         .to_string()
                 }
                 None => {
-                    // Use mod ID as fallback (mod title would need to be passed separately)
-                    Self::sanitize_folder_name(mod_id)
+                    // Use mod title if available, otherwise fall back to modId
+                    let mod_title_to_use = mod_title.unwrap_or(mod_id);
+                    let mut folder_name = Self::sanitize_folder_name(mod_title_to_use);
+                    
+                    // Check if folder with this name already exists and has different mod ID
+                    let proposed_path = mods_path.join(&folder_name);
+                    if proposed_path.exists() && proposed_path.is_dir() {
+                        if let Ok(Some(existing_mod_id)) = query_mod_id(&proposed_path) {
+                            if existing_mod_id != mod_id {
+                                // Folder exists with different mod ID, append modId to avoid conflict
+                                folder_name = format!("{} ({})", folder_name, mod_id);
+                                eprintln!("[ModUpdater] Folder \"{}\" exists with different mod ID, using \"{}\" instead", 
+                                    Self::sanitize_folder_name(mod_title_to_use), folder_name);
+                            }
+                        }
+                    }
+                    
+                    eprintln!("[ModUpdater] No existing folder found for mod {}, will use \"{}\" as folder name", mod_id, folder_name);
+                    folder_name
                 }
             }
         };
@@ -323,6 +341,7 @@ mod tests {
             Some("123456789"), // Provide folder name explicitly
             false,
             None,
+            None,
         ).await.unwrap();
         
         assert!(result.exists());
@@ -351,6 +370,7 @@ mod tests {
             &mods_path,
             Some("My Custom Mod Name"),
             false,
+            None,
             None,
         ).await.unwrap();
         
@@ -388,6 +408,7 @@ mod tests {
             Some("123456789"),
             true,
             Some(&backup_dir),
+            None,
         ).await.unwrap();
         
         assert!(result.exists());

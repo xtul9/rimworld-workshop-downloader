@@ -96,6 +96,10 @@ pub async fn update_mods(
         
         eprintln!("[UPDATE_MODS] Updating mod {} from {:?} to {:?}", downloaded_mod.mod_id, downloaded_mod.mod_path, mods_path);
         
+        // Get mod title from original mod details
+        let mod_title = original_mod.details.as_ref()
+            .map(|d| d.title.clone());
+        
         // Update mod - use downloaded_mod.mod_path directly (it's already the full path)
         let mod_path = updater.update_mod(
             &downloaded_mod.mod_id,
@@ -105,6 +109,7 @@ pub async fn update_mods(
             existing_folder_name,
             backup_mods,
             backup_directory.as_deref().map(PathBuf::from).as_deref(),
+            mod_title.as_deref(),
         ).await.map_err(|e| {
             eprintln!("[UPDATE_MODS] Error updating mod {}: {}", downloaded_mod.mod_id, e);
             format!("Failed to update mod {}: {}", downloaded_mod.mod_id, e)
@@ -469,6 +474,22 @@ pub async fn download_mod(
         .join("294100");
     let mods_path_buf = PathBuf::from(&mods_path);
     
+    // Get mod details to retrieve title and time_updated
+    let mod_id_for_api = mod_id.clone();
+    let steam_api = get_steam_api();
+    let (mod_title, time_updated) = {
+        let mut api = steam_api.lock().await;
+        match api.get_file_details(&mod_id_for_api).await {
+            Ok(details) => (Some(details.title.clone()), details.time_updated),
+            Err(_) => {
+                (None, std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs() as i64)
+            }
+        }
+    };
+    
     let mod_path_result = updater.update_mod(
         &downloaded_mod.mod_id,
         &downloaded_mod.mod_path,
@@ -477,23 +498,8 @@ pub async fn download_mod(
         None,
         false,
         None,
+        mod_title.as_deref(),
     ).await;
-    
-    // Get mod details to retrieve time_updated for .lastupdated file
-    let mod_id_for_api = mod_id.clone();
-    let steam_api = get_steam_api();
-    let time_updated = {
-        let mut api = steam_api.lock().await;
-        match api.get_file_details(&mod_id_for_api).await {
-            Ok(details) => details.time_updated,
-            Err(_) => {
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs() as i64
-            }
-        }
-    };
     
     let mod_id_for_cleanup = mod_id.clone();
     let mod_path = match mod_path_result {
