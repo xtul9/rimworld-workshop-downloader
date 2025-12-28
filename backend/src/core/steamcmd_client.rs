@@ -1149,16 +1149,14 @@ impl Downloader {
                 continue; // Don't process other states for failed mods
             }
             
-            // Detect downloading state - when SteamCMD actually starts downloading
-            // Patterns: "Downloading item <mod_id>", "Downloading Workshop item <mod_id>", etc.
-            // But NOT if it's part of "downloaded" or "download failed"
-            if line_lower.contains("downloading") && 
-               !line_lower.contains("downloaded") &&
-               !line_lower.contains("failed") &&
-               (line_lower.contains("item") || line_lower.contains("workshop")) &&
+            // Detect downloading state - when SteamCMD starts downloading
+            // SteamCMD echoes the command from our script: "workshop_download_item 294100 <mod_id>"
+            // This indicates that SteamCMD is about to start downloading this mod
+            if line_lower.contains("workshop_download_item") && 
+               line_lower.contains("294100") &&
                line_lower.contains(mod_id) {
                 if let Some(app_handle) = app {
-                    eprintln!("[SteamCMD Parser] Mod {} detected as downloading", mod_id);
+                    eprintln!("[SteamCMD Parser] Mod {} detected as downloading (workshop_download_item command)", mod_id);
                     let _ = app_handle.emit("mod-state", serde_json::json!({
                         "modId": mod_id,
                         "state": "downloading"
