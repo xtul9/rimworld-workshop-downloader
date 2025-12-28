@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::fs;
-use crate::backend::mod_query::query_mod_id;
+use crate::core::mod_scanner::query_mod_id;
 
 /// Mod updater for copying mods from download folder to mods folder
 pub struct ModUpdater;

@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::fs;
 use serde::{Deserialize, Serialize};
-use crate::backend::deserializers::{bool_from_int, u64_from_str_or_int, i64_from_str_or_int, i32_from_str_or_int};
+use crate::core::workshop_deserializers::{bool_from_int, u64_from_str_or_int, i64_from_str_or_int, i32_from_str_or_int};
 
 // Default value helpers for optional fields
 fn default_i32() -> i32 {
