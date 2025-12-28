@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { FixedSizeList as List } from "react-window";
 import { openUrl, revealItemInDir, openPath } from "@tauri-apps/plugin-opener";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { BaseMod } from "../types";
 import { useMods } from "../contexts/ModsContext";
 import { useInstalledMods } from "../contexts/InstalledModsContext";
@@ -30,8 +31,9 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
   const { 
     mods: contextMods, 
     error, 
-    updatingMods,
-    downloadedMods,
+    modStates,
+    modErrors,
+    isUpdating,
     ignoreFromList, 
     ignoreThisUpdate, 
     ignorePermanently 
@@ -226,9 +228,11 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
     // Check if mod has details - details can be undefined, null, or empty object
     // A mod has valid details if details exists and has a title (which means it was successfully fetched)
     const hasModDetails = Boolean(mod.details?.title);
+    const isNonSteamMod = mod.nonSteamMod || false;
     // For multiple mods, check if all selected mods (including the clicked one if selected) have details
     const modsToCheck = selected.length > 1 ? selected : [mod];
     const allModsHaveDetails = modsToCheck.every(m => Boolean(m.details?.title));
+    const allModsAreSteam = modsToCheck.every(m => !m.nonSteamMod);
     
     const items: ContextMenuItem[] = [];
     
@@ -238,7 +242,7 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
         { 
           label: useInstalledModsContext ? "Force update selected mods" : "Update selected mods", 
           action: "update",
-          disabled: !allModsHaveDetails
+          disabled: isUpdating || !allModsHaveDetails || !allModsAreSteam
         },
         { separator: true }
       );
@@ -246,7 +250,11 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
       // Only show "Hide for now" in Query & Update tab
       if (!useInstalledModsContext) {
         items.push({ label: "Hide for now", action: "ignore-from-list" });        
-        items.push({ label: "Ignore this update", action: "ignore-this-update" });
+        items.push({ 
+          label: "Ignore this update", 
+          action: "ignore-this-update",
+          disabled: !allModsAreSteam
+        });
       }
       
       items.push(
@@ -258,7 +266,7 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
         { 
           label: useInstalledModsContext ? "Force update" : "Update", 
           action: "update",
-          disabled: !hasModDetails
+          disabled: isUpdating || !hasModDetails || isNonSteamMod
         },
         { 
           label: hasBackup ? "Restore Backup" : "No backup available", 
@@ -267,15 +275,27 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
         },
         { separator: true },
         { label: "Open mod folder", action: "open-folder" },
-        { label: "Open workshop page", action: "open-workshop" },
-        { label: "Open changelog page", action: "open-changelog" },
+        { 
+          label: "Open workshop page", 
+          action: "open-workshop",
+          disabled: isNonSteamMod
+        },
+        { 
+          label: "Open changelog page", 
+          action: "open-changelog",
+          disabled: isNonSteamMod
+        },
         { separator: true }
       );
       
       // Only show "Hide for now" in Query & Update tab
       if (!useInstalledModsContext) {
         items.push({ label: "Hide for now", action: "ignore-from-list" });
-        items.push({ label: "Ignore this update", action: "ignore-this-update" });
+        items.push({ 
+          label: "Ignore this update", 
+          action: "ignore-this-update",
+          disabled: isNonSteamMod
+        });
       }
       
       items.push(
@@ -294,7 +314,7 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
       items,
       handleContextAction
     );
-  }, [mods, selectedMods, modBackups, ignoredUpdates, settings.backupDirectory, showContextMenu, useInstalledModsContext]);
+  }, [mods, selectedMods, modBackups, ignoredUpdates, settings.backupDirectory, showContextMenu, useInstalledModsContext, isUpdating]);
 
   const handleContextAction = useCallback(async (action: string, data: { mod: BaseMod; selected: BaseMod[] }) => {
     const { mod, selected } = data;
@@ -458,22 +478,43 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
             itemCount={mods.length}
             itemSize={ITEM_HEIGHT}
             width="100%"
-            style={{ paddingTop: "10px" }}
-            innerElementType="div"
           >
             {({ index, style }) => {
               const mod = mods[index];
-              const isUpdating = updatingMods.has(mod.modId);
-              const isDownloaded = downloadedMods?.has(mod.modId) || false;
+              const modState = modStates?.get(mod.modId) || null;
+              const modError = modErrors?.get(mod.modId);
+              
+              // isUpdating is computed from modState - if mod has an active state, it's updating
+              // Only show as updating if mod has an active state (not null, not "completed", not "failed")
+              const isUpdating = modState !== null && modState !== "completed" && modState !== "failed";
+
+              const imageSrc = mod.previewImagePath ? convertFileSrc(mod.previewImagePath) : undefined;
+              
+              // Determine status text based on mod state
+              // Only show status text if mod is actually updating (has an active state)
+              const getStatusText = () => {
+                // If mod is not updating, don't show any status text
+                if (!isUpdating || modState === null) return "";
+                
+                if (modState === "queued") return "In queue...";
+                if (modState === "retry-queued") return "Retrying download...";
+                if (modState === "downloading") return "Downloading...";
+                if (modState === "installing") return "Installing...";
+                if (modState === "completed") return "Completed";
+                if (modState === "failed") return modError || "Download failed - please retry";
+                
+                // Fallback for unknown states - should not happen
+                console.warn(`[ModList] Unknown mod state for ${mod.modId}: ${modState}`);
+                return "";
+              };
               
               return (
                 <div
                   style={{
                     ...style,
-                    height: `${parseInt(style.height as string) - 8}px`,
-                    marginBottom: "8px",
+                    height: `${parseInt(style.height as string) - 4}px`,
                   }}
-                  className={`mod-item ${selectedMods.has(mod.modId) ? "selected" : ""} ${mod.updated ? "updated" : ""} ${isUpdating ? "updating" : ""} ${!mod.details ? "no-details" : ""}`}
+                  className={`mod-item ${selectedMods.has(mod.modId) ? "selected" : ""} ${mod.updated ? "updated" : ""} ${isUpdating ? "updating" : ""} ${!mod.details ? "no-details" : ""} ${mod.nonSteamMod ? "non-steam-mod" : ""} ${modState ? `mod-state-${modState}` : ""}`}
                   onClick={(e) => !isUpdating && handleSelectMod(mod.modId, e.ctrlKey || e.metaKey, e.shiftKey, index)}
                   onContextMenu={(e) => !isUpdating && handleContextMenu(e, mod)}
                 >
@@ -481,49 +522,84 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
                     <div className="mod-item-updating">
                       <div className="mod-updating-spinner"></div>
                       <div className="mod-updating-text">
-                        {isDownloaded ? "Installing..." : "Downloading..."}
+                        {getStatusText()}
                       </div>
                       <div className="mod-updating-name">{mod.details?.title || mod.folder || mod.modId}</div>
                     </div>
                   ) : (
                     <>
-                      <div className="mod-item-header">
-                        <span className="mod-name">{mod.details?.title || mod.folder || mod.modId}</span>
-                        <div className="mod-badges">
-                          {!mod.details && (
-                            <span 
-                              className="mod-no-info-badge" 
-                              title={isUpdatingDetails 
-                                ? "Mod details are still being fetched from Steam Workshop!" 
-                                : "No mod information available (mod may be banned or unpublished)"}
-                            >
-                              ⚠️ No info
-                            </span>
-                          )}
-                          {mod.updated && <span className="mod-updated-badge">Updated</span>}
+                      {imageSrc && (
+                        <img 
+                          src={imageSrc}
+                          alt={`${mod.details?.title || mod.folder || mod.modId} preview`}
+                          className="mod-preview-image"
+                          onError={(e) => {
+                            const img = e.target as HTMLImageElement;
+                            img.style.display = 'none';
+                          }}
+                        />
+                      )}
+                      <div className="mod-item-content">
+                        <div className="mod-item-header">
+                          <span className="mod-name">{mod.details?.title || mod.folder || mod.modId}</span>
+                          <div className="mod-badges">
+                            {mod.nonSteamMod && (
+                              <span 
+                                className="mod-non-steam-badge" 
+                                title="Non-Steam mod (not from Steam Workshop)"
+                              >
+                                🏠 Non-Steam
+                              </span>
+                            )}
+                            {!mod.details && !mod.nonSteamMod && (
+                              <span 
+                                className="mod-no-info-badge" 
+                                title={isUpdatingDetails 
+                                  ? "Mod details are still being fetched from Steam Workshop!" 
+                                  : "No mod information available (mod may be banned or unpublished)"}
+                              >
+                                ⚠️ No info
+                              </span>
+                            )}
+                            {mod.updated && <span className="mod-updated-badge">Updated</span>}
+                            {modState === "failed" && (
+                              <span 
+                                className="mod-error-badge" 
+                                title={modError || "Update failed"}
+                              >
+                                ❌ Failed
+                              </span>
+                            )}
+                          </div>
                         </div>
-                      </div>
-                      <div className="mod-item-details">
-                        <div className="mod-detail">
-                          <span className="mod-detail-label">ID:</span>
-                          <span className="mod-detail-value">{mod.modId}</span>
-                        </div>
-                        {mod.details && (
-                          <>
-                            <div className="mod-detail">
-                              <span className="mod-detail-label">Folder:</span>
-                              <span className="mod-detail-value">{mod.folder || mod.modPath}</span>
-                            </div>
-                            <div className="mod-detail">
-                              <span className="mod-detail-label">Size:</span>
-                              <span className="mod-detail-value">{formatSize(mod.details.file_size)}</span>
-                            </div>
-                            <div className="mod-detail">
-                              <span className="mod-detail-label">Updated:</span>
-                              <span className="mod-detail-value">{formatDate(mod.details.time_updated)}</span>
-                            </div>
-                          </>
+                        {modError && (
+                          <div className="mod-item-error">
+                            <span className="mod-error-icon">⚠️</span>
+                            <span className="mod-error-text">{modError}</span>
+                          </div>
                         )}
+                        <div className="mod-item-details">
+                          <div className="mod-detail mod-detail-id">
+                            <span className="mod-detail-label">ID:</span>
+                            <span className="mod-detail-value">{mod.modId}</span>
+                          </div>
+                          {mod.details && (
+                            <>
+                              <div className="mod-detail mod-detail-folder">
+                                <span className="mod-detail-label">Folder:</span>
+                                <span className="mod-detail-value">{mod.folder || mod.modPath}</span>
+                              </div>
+                              <div className="mod-detail mod-detail-size">
+                                <span className="mod-detail-label">Size:</span>
+                                <span className="mod-detail-value">{formatSize(mod.details.file_size)}</span>
+                              </div>
+                              <div className="mod-detail mod-detail-updated">
+                                <span className="mod-detail-label">Updated:</span>
+                                <span className="mod-detail-value">{formatDate(mod.details.time_updated)}</span>
+                              </div>
+                            </>
+                          )}
+                        </div>
                       </div>
                     </>
                   )}
@@ -537,4 +613,5 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
     </div>
   );
 }
+
 

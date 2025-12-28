@@ -109,17 +109,18 @@
 }
 
 .mod-item {
-  padding: 12px;
-  margin: 0;
+  padding: 8px;
   background-color: #f8f9fa;
-  border: 2px solid transparent;
+  border: 1px solid transparent;
   border-radius: 4px;
   cursor: pointer;
   transition: all 0.2s;
-  min-height: 72px;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
+  align-items: stretch;
+  gap: 12px;
   box-sizing: border-box;
+  position: relative;
 }
 
 /* Removed :last-child margin-bottom as react-window handles spacing */
@@ -168,12 +169,49 @@
   border-color: #2980b9;
 }
 
+.mod-item.non-steam-mod {
+  background-color: #f5f5f5;
+  border: 1px solid transparent;
+}
+
+.mod-item.non-steam-mod:hover {
+  background-color: #e8e8e8;
+}
+
+.mod-item.selected.non-steam-mod {
+  background-color: #e3f2fd;
+  border: 1px solid #90caf9;
+}
+
+.mod-item.selected.non-steam-mod:hover {
+  background-color: #bbdefb;
+  border-color: #64b5f6;
+}
+
 .mod-item-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
   margin-bottom: 8px;
   gap: 8px;
+}
+
+.mod-preview-image {
+  width: 80px;
+  height: 100%;
+  max-height: 100%;
+  object-fit: cover;
+  border-radius: 4px;
+  flex-shrink: 0;
+  align-self: stretch;
+  display: block;
+}
+
+.mod-item-content {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0; /* Allows content to shrink if needed */
 }
 
 .mod-badges {
@@ -208,25 +246,127 @@
   white-space: nowrap;
 }
 
+.mod-non-steam-badge {
+  padding: 2px 8px;
+  background-color: #9e9e9e;
+  color: white;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.mod-error-badge {
+  padding: 2px 8px;
+  background-color: #dc3545;
+  color: white;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.mod-item-error {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  margin: 4px 0;
+  background-color: #fee;
+  border: 1px solid #fcc;
+  border-radius: 4px;
+  color: #c33;
+  font-size: 12px;
+}
+
+.mod-error-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.mod-error-text {
+  flex: 1;
+  word-break: break-word;
+}
+
+.mod-item.mod-state-retry-queued {
+  background-color: #fff3e0;
+  border-color: #ff9800;
+}
+
+.mod-item.mod-state-retry-queued:hover {
+  background-color: #ffe0b2;
+  border-color: #f57c00;
+}
+
+.mod-item.selected.mod-state-retry-queued {
+  background-color: #ffe0b2;
+  border-color: #ff9800;
+}
+
+.mod-item.selected.mod-state-retry-queued:hover {
+  background-color: #ffcc80;
+  border-color: #f57c00;
+}
+
 .mod-item-details {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 8px;
+  grid-template-columns: 100px 1fr 120px 180px;
+  gap: 12px;
+  width: 100%;
   font-size: 12px;
+  margin-top: auto;
+  align-items: center;
+}
+
+/* When mod.details is missing, only show ID column */
+.mod-item-details:has(.mod-detail-id:only-child) {
+  grid-template-columns: 100px;
 }
 
 .mod-detail {
   display: flex;
   gap: 6px;
+  align-items: center;
+  min-width: 0; /* Allows shrinking for ellipsis */
+}
+
+.mod-detail-id {
+  grid-column: 1;
+}
+
+.mod-detail-folder {
+  grid-column: 2;
+  min-width: 0; /* Allows folder to shrink */
+  max-width: 100%;
+}
+
+.mod-detail-size {
+  grid-column: 3;
+  width: 120px;
+  max-width: 120px;
+}
+
+.mod-detail-updated {
+  grid-column: 4;
+  width: 180px;
+  max-width: 180px;
+  justify-self: end; /* Align to right edge of grid cell */
 }
 
 .mod-detail-label {
   font-weight: 600;
   color: #666;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .mod-detail-value {
   color: #333;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0; /* Allows text to shrink and show ellipsis */
 }
 
 .mod-item-updating {
@@ -359,9 +499,64 @@
     border-color: #2980b9;
   }
 
+.dark .mod-item.non-steam-mod {
+    background-color: #2a2a2a;
+    border: 1px solid transparent;
+  }
+
+.dark .mod-item.non-steam-mod:hover {
+    background-color: #333333;
+  }
+
+.dark .mod-item.selected.non-steam-mod {
+    background-color: #1e3a4a;
+    border: 1px solid #3498db;
+  }
+
+.dark .mod-item.selected.non-steam-mod:hover {
+    background-color: #1a4d6e;
+    border-color: #2980b9;
+  }
+
 .dark .mod-no-info-badge {
     background-color: #ff9800;
     color: white;
+  }
+
+.dark .mod-non-steam-badge {
+    background-color: #757575;
+    color: white;
+  }
+
+.dark .mod-error-badge {
+    background-color: #dc3545;
+    color: white;
+  }
+
+.dark .mod-item.mod-state-retry-queued {
+    background-color: #3d2f00;
+    border-color: #ff9800;
+  }
+
+.dark .mod-item.mod-state-retry-queued:hover {
+    background-color: #4d3f00;
+    border-color: #f57c00;
+  }
+
+.dark .mod-item.selected.mod-state-retry-queued {
+    background-color: #4d3f00;
+    border-color: #ff9800;
+  }
+
+.dark .mod-item.selected.mod-state-retry-queued:hover {
+    background-color: #5d4f00;
+    border-color: #f57c00;
+  }
+
+.dark .mod-item-error {
+    background-color: #3d1e1e;
+    border-color: #5c2e2e;
+    color: #ff6b6b;
   }
 
 .dark .mod-updating-text {

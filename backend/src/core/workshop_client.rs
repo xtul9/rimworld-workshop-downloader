@@ -1,6 +1,6 @@
-use crate::backend::mod_query::WorkshopFileDetails;
-use crate::backend::cache::Cache;
-use crate::backend::rate_limiter::RateLimiter;
+use crate::core::mod_scanner::WorkshopFileDetails;
+use crate::core::api_cache::Cache;
+use crate::core::api_rate_limiter::RateLimiter;
 use std::time::Duration;
 
 const STEAM_API_BASE: &str = "http://api.steampowered.com";
@@ -133,7 +133,7 @@ impl SteamApi {
         }
 
         // Fetch details for all mods in collection using batch query
-        let all_details = match crate::backend::mod_query::query_mod_batch(&mod_ids, 0).await {
+        let all_details = match crate::core::mod_scanner::query_mod_batch(&mod_ids, 0).await {
             Ok(details) => details,
             Err(_) => {
                 // Fallback to individual queries if batch fails

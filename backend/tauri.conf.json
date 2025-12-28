@@ -19,7 +19,11 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; img-src 'self' asset: https://asset.localhost http://localhost:* data: blob:",
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["**"]
+      }
     },
     "withGlobalTauri": false
   },

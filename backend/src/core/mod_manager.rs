@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::fs;
-use crate::backend::mod_query::query_mod_id;
+use crate::core::mod_scanner::query_mod_id;
+use quick_xml::events::Event;
+use quick_xml::Reader;
 
 /// Mod updater for copying mods from download folder to mods folder
 pub struct ModUpdater;
@@ -67,15 +69,100 @@ impl ModUpdater {
                     let mod_title_to_use = mod_title.unwrap_or(mod_id);
                     let mut folder_name = Self::sanitize_folder_name(mod_title_to_use);
                     
-                    // Check if folder with this name already exists and has different mod ID
-                    let proposed_path = mods_path.join(&folder_name);
+                    // Get packageId from the source mod (the one being downloaded)
+                    let source_package_id = if mod_path.exists() && mod_path.is_dir() {
+                        Self::get_package_id(mod_path)
+                    } else {
+                        let fallback_path = download_path.join(mod_id);
+                        if fallback_path.exists() && fallback_path.is_dir() {
+                            Self::get_package_id(&fallback_path)
+                        } else {
+                            None
+                        }
+                    };
+                    
+                    // Check if folder with this name already exists
+                    let mut proposed_path = mods_path.join(&folder_name);
                     if proposed_path.exists() && proposed_path.is_dir() {
-                        if let Ok(Some(existing_mod_id)) = query_mod_id(&proposed_path) {
-                            if existing_mod_id != mod_id {
-                                // Folder exists with different mod ID, append modId to avoid conflict
-                                folder_name = format!("{} ({})", folder_name, mod_id);
-                                eprintln!("[ModUpdater] Folder \"{}\" exists with different mod ID, using \"{}\" instead", 
+                        let existing_package_id = Self::get_package_id(&proposed_path);
+                        
+                        match (source_package_id.as_ref(), existing_package_id.as_ref()) {
+                            // Both have packageId - compare them
+                            (Some(src_id), Some(existing_id)) => {
+                                if src_id != existing_id {
+                                    // Different packageId - change folder name to avoid conflict
+                                    // Try adding "_" until we find a unique name or one with same packageId
+                                    let base_name = folder_name.clone();
+                                    loop {
+                                        folder_name = format!("{}_", folder_name);
+                                        proposed_path = mods_path.join(&folder_name);
+                                        if !proposed_path.exists() {
+                                            break;
+                                        }
+                                        // Check if existing folder has same packageId
+                                        if let Some(existing_id_check) = Self::get_package_id(&proposed_path) {
+                                            if existing_id_check == *src_id {
+                                                // Same packageId - can overwrite
+                                                break;
+                                            }
+                                        }
+                                        // Safety limit - if we've added too many underscores, use mod_id
+                                        if folder_name.len() > base_name.len() + 50 {
+                                            folder_name = format!("{}_{}", base_name, mod_id);
+                                            break;
+                                        }
+                                    }
+                                    eprintln!("[ModUpdater] Folder \"{}\" exists with different packageId ({} vs {}), using \"{}\" instead", 
+                                        Self::sanitize_folder_name(mod_title_to_use), existing_id, src_id, folder_name);
+                                }
+                                // Same packageId - will overwrite (no change to folder_name)
+                            }
+                            // Source has packageId, existing doesn't - different mods, change name
+                            (Some(_), None) => {
+                                let base_name = folder_name.clone();
+                                loop {
+                                    folder_name = format!("{}_", folder_name);
+                                    proposed_path = mods_path.join(&folder_name);
+                                    if !proposed_path.exists() {
+                                        break;
+                                    }
+                                    // Safety limit
+                                    if folder_name.len() > base_name.len() + 50 {
+                                        folder_name = format!("{}_{}", base_name, mod_id);
+                                        break;
+                                    }
+                                }
+                                eprintln!("[ModUpdater] Folder \"{}\" exists but has no packageId, using \"{}\" instead", 
                                     Self::sanitize_folder_name(mod_title_to_use), folder_name);
+                            }
+                            // Source doesn't have packageId, existing does - different mods, change name
+                            (None, Some(_)) => {
+                                let base_name = folder_name.clone();
+                                loop {
+                                    folder_name = format!("{}_", folder_name);
+                                    proposed_path = mods_path.join(&folder_name);
+                                    if !proposed_path.exists() {
+                                        break;
+                                    }
+                                    // Safety limit
+                                    if folder_name.len() > base_name.len() + 50 {
+                                        folder_name = format!("{}_{}", base_name, mod_id);
+                                        break;
+                                    }
+                                }
+                                eprintln!("[ModUpdater] Folder \"{}\" exists with packageId but source doesn't, using \"{}\" instead", 
+                                    Self::sanitize_folder_name(mod_title_to_use), folder_name);
+                            }
+                            // Neither has packageId - fall back to mod_id check
+                            (None, None) => {
+                                if let Ok(Some(existing_mod_id)) = query_mod_id(&proposed_path) {
+                                    if existing_mod_id != mod_id {
+                                        // Folder exists with different mod ID, append modId to avoid conflict
+                                        folder_name = format!("{} ({})", folder_name, mod_id);
+                                        eprintln!("[ModUpdater] Folder \"{}\" exists with different mod ID, using \"{}\" instead", 
+                                            Self::sanitize_folder_name(mod_title_to_use), folder_name);
+                                    }
+                                }
                             }
                         }
                     }
@@ -138,9 +225,23 @@ impl ModUpdater {
             return Err(format!("Source mod folder not found: {:?}", source_path));
         }
 
+        // Verify source mod is complete before copying
+        if !Self::verify_mod_complete(&source_path) {
+            return Err(format!("Source mod at {:?} appears incomplete or invalid. Refusing to copy.", source_path));
+        }
+
         eprintln!("[ModUpdater] Copying mod from {:?} to {:?}", source_path, mod_destination_path);
         copy_dir_all_async(&source_path, &mod_destination_path).await
             .map_err(|e| format!("Failed to copy mod: {}", e))?;
+
+        // Verify copied mod is complete
+        if !Self::verify_mod_complete(&mod_destination_path) {
+            return Err(format!("Copied mod at {:?} appears incomplete. Copy may have failed.", mod_destination_path));
+        }
+
+        // Ensure PublishedFileId.txt exists after copying
+        Self::ensure_published_file_id(&mod_destination_path, mod_id).await
+            .map_err(|e| format!("Failed to create PublishedFileId.txt: {}", e))?;
 
         eprintln!("[ModUpdater] Mod {} copied successfully to {:?}", mod_id, mod_destination_path);
 
@@ -166,6 +267,162 @@ impl ModUpdater {
         }
         
         Ok(None)
+    }
+
+    /// Ensure PublishedFileId.txt exists in the mod's About folder
+    /// Creates the file if it doesn't exist
+    async fn ensure_published_file_id(mod_path: &Path, mod_id: &str) -> Result<(), String> {
+        let about_path = mod_path.join("About");
+        
+        // Check if About folder exists, if not, create it
+        if !about_path.exists() {
+            fs::create_dir_all(&about_path)
+                .map_err(|e| format!("Failed to create About directory: {}", e))?;
+            eprintln!("[ModUpdater] Created About directory at {:?}", about_path);
+        }
+        
+        let file_id_path = about_path.join("PublishedFileId.txt");
+        
+        // Check if PublishedFileId.txt already exists
+        if file_id_path.exists() {
+            // Verify it contains the correct mod ID
+            match fs::read_to_string(&file_id_path) {
+                Ok(content) => {
+                    let existing_id = content.trim();
+                    if existing_id == mod_id {
+                        // File exists and has correct ID, nothing to do
+                        return Ok(());
+                    } else {
+                        eprintln!("[ModUpdater] PublishedFileId.txt exists but has different ID ({} vs {}), updating it", existing_id, mod_id);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[ModUpdater] Failed to read existing PublishedFileId.txt: {}, will recreate it", e);
+                }
+            }
+        }
+        
+        // Create or update PublishedFileId.txt
+        tokio::task::spawn_blocking({
+            let file_id_path = file_id_path.clone();
+            let mod_id = mod_id.to_string();
+            move || {
+                fs::write(&file_id_path, mod_id)
+                    .map_err(|e| format!("Failed to write PublishedFileId.txt: {}", e))
+            }
+        }).await
+        .map_err(|e| format!("Task panicked: {:?}", e))?
+        .map_err(|e| e)?;
+        
+        eprintln!("[ModUpdater] Created/updated PublishedFileId.txt at {:?} with ID {}", file_id_path, mod_id);
+        Ok(())
+    }
+
+    /// Extract packageId from About.xml
+    /// Returns None if About.xml doesn't exist or packageId cannot be found
+    fn get_package_id(mod_path: &Path) -> Option<String> {
+        let about_path = mod_path.join("About");
+        let about_xml_path = about_path.join("About.xml");
+        
+        if !about_xml_path.exists() {
+            return None;
+        }
+        
+        let content = match fs::read_to_string(&about_xml_path) {
+            Ok(c) => c,
+            Err(_) => return None,
+        };
+        
+        let mut reader = Reader::from_str(&content);
+        reader.trim_text(true);
+        
+        let mut in_mod_metadata = false;
+        let mut depth = 0; // Track nesting depth within ModMetaData
+        let mut in_package_id = false;
+        let mut package_id = String::new();
+        
+        loop {
+            match reader.read_event() {
+                Ok(Event::Start(e)) => {
+                    let name = e.name();
+                    if name.as_ref() == b"ModMetaData" {
+                        in_mod_metadata = true;
+                        depth = 0; // Reset depth when entering ModMetaData
+                    } else if in_mod_metadata {
+                        depth += 1;
+                        // Only accept packageId if we're directly under ModMetaData (depth == 1)
+                        if depth == 1 && name.as_ref() == b"packageId" {
+                            in_package_id = true;
+                        }
+                    }
+                }
+                Ok(Event::Text(e)) => {
+                    // Only capture text if we're in packageId and directly under ModMetaData
+                    if in_package_id && depth == 1 {
+                        package_id = e.unescape().unwrap_or_default().to_string();
+                    }
+                }
+                Ok(Event::End(e)) => {
+                    let name = e.name();
+                    if name.as_ref() == b"packageId" {
+                        // Check depth before decreasing it
+                        let is_direct_child = in_package_id && depth == 1;
+                        if in_mod_metadata {
+                            depth -= 1;
+                        }
+                        if is_direct_child {
+                            in_package_id = false;
+                            if !package_id.is_empty() {
+                                return Some(package_id.trim().to_string());
+                            }
+                        }
+                    } else if name.as_ref() == b"ModMetaData" {
+                        in_mod_metadata = false;
+                        depth = 0;
+                    } else if in_mod_metadata {
+                        depth -= 1;
+                    }
+                }
+                Ok(Event::Eof) => break,
+                Err(e) => {
+                    eprintln!("[ModUpdater] Error parsing About.xml: {:?}", e);
+                    return None;
+                }
+                _ => {}
+            }
+        }
+        
+        None
+    }
+
+    /// Verify that a mod is complete before copying
+    fn verify_mod_complete(mod_path: &Path) -> bool {
+        // Check if mod folder exists and is a directory
+        if !mod_path.exists() || !mod_path.is_dir() {
+            eprintln!("[ModUpdater] Mod path does not exist or is not a directory: {:?}", mod_path);
+            return false;
+        }
+        
+        // Check if folder has any content
+        let has_content = if let Ok(entries) = fs::read_dir(mod_path) {
+            entries.take(1).count() > 0
+        } else {
+            false
+        };
+        
+        if !has_content {
+            eprintln!("[ModUpdater] Mod folder is empty: {:?}", mod_path);
+            return false;
+        }
+        
+        // Check for About folder (essential for RimWorld mods)
+        let about_path = mod_path.join("About");
+        if !about_path.exists() || !about_path.is_dir() {
+            eprintln!("[ModUpdater] Mod missing About folder: {:?}", mod_path);
+            return false;
+        }
+        
+        true
     }
 }
 

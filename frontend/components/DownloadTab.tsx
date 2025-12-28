@@ -2,6 +2,7 @@ import { useState, useRef } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { BaseMod } from "../types";
 import { useModsPath } from "../contexts/ModsPathContext";
+import { useSettings } from "../contexts/SettingsContext";
 import { useFormatting } from "../hooks/useFormatting";
 import { invoke } from "@tauri-apps/api/core";
 import "./DownloadTab.css";
@@ -20,6 +21,7 @@ interface ModInput {
 
 export default function DownloadTab() {
   const { modsPath } = useModsPath();
+  const { settings } = useSettings();
   const { formatSize } = useFormatting();
   const [modInputs, setModInputs] = useState<ModInput[]>([
     { id: "1", value: "", status: "empty" }
@@ -309,7 +311,8 @@ export default function DownloadTab() {
       const result = await invoke<{ modId: string; modPath: string; folder: string }>("download_mod", {
         modId: details.publishedfileid,
         title: details.title,
-        modsPath: modsPath
+        modsPath: modsPath,
+        maxSteamcmdInstances: settings.maxSteamcmdInstances || 1
       });
       
       // Convert result to BaseMod format

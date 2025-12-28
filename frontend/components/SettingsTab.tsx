@@ -272,6 +272,30 @@ export default function SettingsTab() {
         </SettingField>
 
         <SettingField
+          title="Max SteamCMD Instances"
+          description="Maximum number of parallel SteamCMD instances to use when downloading mods. Higher values will improve download speed but use more system resources, and be more prone to failures. Recommended: 1-2, 1 for most reliability."
+        >
+          <label htmlFor="max-steamcmd-instances" className="settings-label">
+            Maximum Parallel Instances
+          </label>
+          <input
+            id="max-steamcmd-instances"
+            type="number"
+            className="settings-input"
+            min="1"
+            max="8"
+            value={settings.maxSteamcmdInstances ?? 1}
+            onChange={async (e) => {
+              const value = parseInt(e.target.value, 10);
+              if (!isNaN(value) && value >= 1 && value <= 8) {
+                await updateSetting("maxSteamcmdInstances", value);
+              }
+            }}
+            placeholder="4"
+          />
+        </SettingField>
+
+        <SettingField
           title="Ignored Mods"
           description="Mods in this list will be permanently ignored and won't appear in update queries. You can remove mods from this list to start checking for updates again."
         >

@@ -1,18 +1,25 @@
-import { createContext, useContext, useState, ReactNode, useEffect } from "react";
+import { createContext, useContext, useState, ReactNode, useEffect, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { BaseMod } from "../types";
 import { useSettings } from "./SettingsContext";
 
+// Simplified state system: each mod has a single state that is managed ONLY by events
+export type ModState = "queued" | "retry-queued" | "downloading" | "installing" | "completed" | "failed" | null;
+
 interface ModsContextType {
   mods: BaseMod[];
   setMods: (mods: BaseMod[] | ((prev: BaseMod[]) => BaseMod[])) => void;
   isQuerying: boolean;
-  isUpdating: boolean;
   error: string | null;
-  updatingMods: Set<string>;
-  downloadedMods: Set<string>;
+  // Single source of truth: modStates contains all state information
+  modStates: Map<string, ModState>;
+  modErrors: Map<string, string>;
   hasQueried: boolean;
+  // Computed: isUpdating is true if any mod has an active state
+  isUpdating: boolean;
+  // Computed: isModUpdating returns true if specific mod is updating
+  isModUpdating: (modId: string) => boolean;
   queryMods: (modsPath: string) => Promise<void>;
   updateMods: (modsToUpdate: BaseMod[]) => Promise<void>;
   removeMods: (modsToRemove: BaseMod[]) => void;
@@ -26,47 +33,133 @@ const ModsContext = createContext<ModsContextType | undefined>(undefined);
 export function ModsProvider({ children }: { children: ReactNode }) {
   const [mods, setMods] = useState<BaseMod[]>([]);
   const [isQuerying, setIsQuerying] = useState(false);
-  const [isUpdating, setIsUpdating] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [updatingMods, setUpdatingMods] = useState<Set<string>>(new Set());
-  const [downloadedMods, setDownloadedMods] = useState<Set<string>>(new Set());
+  const [modStates, setModStates] = useState<Map<string, ModState>>(new Map());
+  const [modErrors, setModErrors] = useState<Map<string, string>>(new Map());
   const [hasQueried, setHasQueried] = useState(false);
   const { updateSetting, settings } = useSettings();
+  
+  // Computed: isUpdating is true if any mod has an active state (not null, not "completed", not "failed")
+  const isUpdating = useMemo(() => {
+    for (const state of modStates.values()) {
+      if (state !== null && state !== "completed" && state !== "failed") {
+        return true;
+      }
+    }
+    return false;
+  }, [modStates]);
+  
+  // Computed: isModUpdating returns true if specific mod is updating
+  const isModUpdating = (modId: string) => {
+    const state = modStates.get(modId);
+    return state !== null && state !== "completed" && state !== "failed";
+  };
 
   // Listen for real-time download and update events
+  // Events are the ONLY source of truth for mod states
   useEffect(() => {
-    let unlistenDownloaded: (() => void) | undefined;
+    let unlistenState: (() => void) | undefined;
     let unlistenUpdated: (() => void) | undefined;
 
     const setupListeners = async () => {
-      // Listen for mod-downloaded events
-      unlistenDownloaded = await listen<{ modId: string }>("mod-downloaded", (event) => {
-        const modId = event.payload.modId;
-        console.log(`[EVENT] Mod downloaded: ${modId}`);
-        setDownloadedMods(prev => new Set([...prev, modId]));
+      // Listen for mod-state events - this is the PRIMARY event for all state changes
+      unlistenState = await listen<{ modId: string; state: string; error?: string; retryAttempt?: number; maxRetries?: number }>("mod-state", (event) => {
+        const { modId, state, error: eventError } = event.payload;
+        console.log(`[EVENT] Mod state changed: ${modId} -> ${state}`);
+        
+        setModStates(prev => {
+          const newMap = new Map(prev);
+          // Map backend states to frontend states
+          if (state === "queued" || state === "retry-queued" || state === "downloading" || 
+              state === "installing" || state === "failed") {
+            newMap.set(modId, state as ModState);
+          } else if (state === "completed") {
+            // Backend doesn't emit "completed" yet, but we'll handle it if it does
+            newMap.set(modId, "completed");
+          } else {
+            // Unknown state or null - remove from map
+            newMap.delete(modId);
+          }
+          return newMap;
+        });
+        
+        // Handle error messages
+        if (state === "failed") {
+          const errorMessage = eventError || "Operation failed";
+          setModErrors(prev => {
+            const newMap = new Map(prev);
+            newMap.set(modId, errorMessage);
+            return newMap;
+          });
+        } else {
+          // Clear error when mod state changes to non-failed
+          setModErrors(prev => {
+            const newMap = new Map(prev);
+            newMap.delete(modId);
+            return newMap;
+          });
+        }
       });
 
-      // Listen for mod-updated events
+      // Listen for mod-updated events - this marks the end of installation
       unlistenUpdated = await listen<{ modId: string; success: boolean; error?: string }>("mod-updated", (event) => {
         const { modId, success, error } = event.payload;
         console.log(`[EVENT] Mod updated: ${modId}, success: ${success}`);
         
+        // Only update state if mod is not in retry-queued state
+        // This prevents mod-updated from overwriting retry-queued state
+        setModStates(prev => {
+          const currentState = prev.get(modId);
+          // Don't overwrite retry-queued with failed - let mod-state events handle retry states
+          if (currentState === "retry-queued") {
+            console.log(`[EVENT] Mod ${modId} is in retry-queued state, ignoring mod-updated event`);
+            return prev;
+          }
+          
+          const newMap = new Map(prev);
+          if (success) {
+            // Mark as completed and remove from active states
+            newMap.set(modId, "completed");
+            // After a short delay, remove from map entirely (mod is done)
+            setTimeout(() => {
+              setModStates(prevMap => {
+                const finalMap = new Map(prevMap);
+                finalMap.delete(modId);
+                return finalMap;
+              });
+            }, 1000);
+          } else {
+            // Only mark as failed if not in retry-queued state
+            // Failed state should only be set by mod-state events after all retries are exhausted
+            const stateToCheck = currentState as ModState;
+            if (stateToCheck !== undefined && stateToCheck !== "retry-queued") {
+              newMap.set(modId, "failed");
+            }
+          }
+          return newMap;
+        });
+        
         if (success) {
-          // Remove mod from list immediately when updated
+          // Remove mod from list immediately when updated (Query tab behavior)
           setMods(prev => prev.filter(m => m.modId !== modId));
-          setUpdatingMods(prev => {
-            const newSet = new Set(prev);
-            newSet.delete(modId);
-            return newSet;
+          // Clear any errors
+          setModErrors(prev => {
+            const newMap = new Map(prev);
+            newMap.delete(modId);
+            return newMap;
           });
         } else {
-          // Handle error - keep mod in list but mark as failed
-          console.error(`[EVENT] Mod update failed: ${modId}, error: ${error}`);
-          setUpdatingMods(prev => {
-            const newSet = new Set(prev);
-            newSet.delete(modId);
-            return newSet;
-          });
+          // Handle error - but only if not in retry-queued state
+          const currentState = modStates.get(modId);
+          if (currentState !== "retry-queued") {
+            console.error(`[EVENT] Mod update failed: ${modId}, error: ${error}`);
+            // Store error for this mod
+            setModErrors(prev => {
+              const newMap = new Map(prev);
+              newMap.set(modId, error || "Update failed");
+              return newMap;
+            });
+          }
         }
       });
     };
@@ -74,7 +167,7 @@ export function ModsProvider({ children }: { children: ReactNode }) {
     setupListeners().catch(console.error);
 
     return () => {
-      unlistenDownloaded?.();
+      unlistenState?.();
       unlistenUpdated?.();
     };
   }, []);
@@ -96,7 +189,7 @@ export function ModsProvider({ children }: { children: ReactNode }) {
     try {
       // Include ignoredMods in query (extract only IDs for backend)
       const ignoredMods = settings.ignoredMods || [];
-      const ignoredModIds = ignoredMods.map(mod => typeof mod === 'string' ? mod : mod.modId).filter(Boolean); // Support both old format (string[]) and new format (IgnoredMod[])
+      const ignoredModIds = ignoredMods.map(mod => typeof mod === 'string' ? mod : mod.modId).filter(Boolean);
       
       // Call Tauri command instead of fetch
       const mods = await invoke<BaseMod[]>("query_mods", {
@@ -124,30 +217,42 @@ export function ModsProvider({ children }: { children: ReactNode }) {
   const updateMods = async (modsToUpdate: BaseMod[]) => {
     if (modsToUpdate.length === 0) return;
     
-    setIsUpdating(true);
     setError(null);
     
-    // Mark mods as updating and clear downloaded mods set
-    const modIdsToUpdate = new Set(modsToUpdate.map(m => m.modId));
-    setUpdatingMods(modIdsToUpdate);
-    setDownloadedMods(new Set());
+    // Set initial states for all mods being updated
+    // Events will update these states as progress happens
+    setModStates(prev => {
+      const newMap = new Map(prev);
+      for (const mod of modsToUpdate) {
+        // Only set state if mod is a Steam mod (non-Steam mods can't be updated)
+        if (!mod.nonSteamMod) {
+          newMap.set(mod.modId, "queued");
+        }
+      }
+      return newMap;
+    });
     
     try {
       // Call Tauri command - events will update UI in real-time
       const updated = await invoke<BaseMod[]>("update_mods", {
         mods: modsToUpdate,
         backupMods: settings.backupMods || false,
-        backupDirectory: settings.backupDirectory || undefined
+        backupDirectory: settings.backupDirectory || undefined,
+        maxSteamcmdInstances: settings.maxSteamcmdInstances || 1
       });
       
       console.log(`[UPDATE] Received ${updated.length} updated mod(s) from Rust backend`);
       
-      // Remove any remaining mods that weren't removed by events
-      const updatedModIds = new Set(updated.map((u: BaseMod) => u.modId));
-      setMods(prev => prev.filter(m => !updatedModIds.has(m.modId)));
+      // Filter out successfully updated mods from the list
+      // Events have already updated modStates, so we just need to clean up the list
+      const successfullyUpdatedModIds = new Set(
+        updated.filter((u: BaseMod) => u.updated === true).map((u: BaseMod) => u.modId)
+      );
+      setMods(prev => prev.filter(m => !successfullyUpdatedModIds.has(m.modId)));
       
-      if (updated.length === 0 && modIdsToUpdate.size > 0) {
-        setError('No mods were updated. Check backend logs for details.');
+      // If there were mods to update but none were successfully updated, set a global error
+      if (successfullyUpdatedModIds.size === 0 && modsToUpdate.length > 0) {
+        setError('No mods were successfully updated. Check individual mod statuses for details.');
       } else {
         setError(null);
       }
@@ -155,10 +260,15 @@ export function ModsProvider({ children }: { children: ReactNode }) {
       console.error("Failed to update mods:", error);
       const errorMessage = error instanceof Error ? error.message : String(error);
       setError(`Error updating mods: ${errorMessage}`);
-    } finally {
-      setIsUpdating(false);
-      setUpdatingMods(new Set());
-      setDownloadedMods(new Set());
+      
+      // On error, clear states for all mods that were being updated
+      setModStates(prev => {
+        const newMap = new Map(prev);
+        for (const mod of modsToUpdate) {
+          newMap.delete(mod.modId);
+        }
+        return newMap;
+      });
     }
   };
 
@@ -167,18 +277,14 @@ export function ModsProvider({ children }: { children: ReactNode }) {
   };
 
   const ignoreFromList = (modsToIgnore: BaseMod[]) => {
-    // Simply remove from current list (same as removeMods)
     setMods(prev => prev.filter(m => !modsToIgnore.some(ignored => ignored.modId === m.modId)));
   };
 
   const ignoreThisUpdate = async (modsToIgnore: BaseMod[]) => {
     try {
-      // Call Tauri command to update .lastupdated file with current remote timestamp
       await invoke("ignore_update", {
         mods: modsToIgnore
       });
-
-      // Remove from list after successful ignore
       setMods(prev => prev.filter(m => !modsToIgnore.some(ignored => ignored.modId === m.modId)));
     } catch (error) {
       console.error("Failed to ignore update:", error);
@@ -189,29 +295,12 @@ export function ModsProvider({ children }: { children: ReactNode }) {
 
   const ignorePermanently = async (modsToIgnore: BaseMod[]) => {
     try {
-      // Add mod IDs and titles to ignoredMods in settings
+      const ignoredModIds = modsToIgnore.map(mod => mod.modId);
       const currentIgnored = settings.ignoredMods || [];
-      const existingModIds = new Set(
-        currentIgnored.map(mod => typeof mod === 'string' ? mod : mod.modId)
-      );
-      
-      const newModsToAdd = modsToIgnore
-        .filter(m => !existingModIds.has(m.modId))
-        .map(m => ({
-          modId: m.modId,
-          title: m.details?.title || m.folder || m.modId
-        }));
-      
-      // Migrate old format (string[]) to new format (IgnoredMod[])
-      const migratedIgnored = currentIgnored.map(mod => 
-        typeof mod === 'string' ? { modId: mod, title: mod } : mod
-      );
-      
-      const newIgnored = [...migratedIgnored, ...newModsToAdd];
-      
-      await updateSetting("ignoredMods", newIgnored);
-      
-      // Remove from list after successful ignore
+      // Handle both old format (string[]) and new format (IgnoredMod[])
+      const currentIgnoredIds = currentIgnored.map((item: any) => typeof item === 'string' ? item : item.modId);
+      const newIgnored = [...currentIgnoredIds, ...ignoredModIds];
+      await updateSetting("ignoredMods", newIgnored as any);
       setMods(prev => prev.filter(m => !modsToIgnore.some(ignored => ignored.modId === m.modId)));
     } catch (error) {
       console.error("Failed to ignore permanently:", error);
@@ -226,17 +315,18 @@ export function ModsProvider({ children }: { children: ReactNode }) {
         mods,
         setMods,
         isQuerying,
-        isUpdating,
         error,
-        updatingMods,
+        modStates,
+        modErrors,
         hasQueried,
+        isUpdating,
+        isModUpdating,
         queryMods,
         updateMods,
         removeMods,
         ignoreFromList,
         ignoreThisUpdate,
         ignorePermanently,
-        downloadedMods,
       }}
     >
       {children}
@@ -251,4 +341,3 @@ export function useMods() {
   }
   return context;
 }
-
