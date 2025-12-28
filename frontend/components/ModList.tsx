@@ -33,6 +33,7 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
     error, 
     modStates,
     modErrors,
+    isUpdating,
     ignoreFromList, 
     ignoreThisUpdate, 
     ignorePermanently 
@@ -241,7 +242,7 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
         { 
           label: useInstalledModsContext ? "Force update selected mods" : "Update selected mods", 
           action: "update",
-          disabled: !allModsHaveDetails || !allModsAreSteam
+          disabled: isUpdating || !allModsHaveDetails || !allModsAreSteam
         },
         { separator: true }
       );
@@ -265,7 +266,7 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
         { 
           label: useInstalledModsContext ? "Force update" : "Update", 
           action: "update",
-          disabled: !hasModDetails || isNonSteamMod
+          disabled: isUpdating || !hasModDetails || isNonSteamMod
         },
         { 
           label: hasBackup ? "Restore Backup" : "No backup available", 
@@ -313,7 +314,7 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
       items,
       handleContextAction
     );
-  }, [mods, selectedMods, modBackups, ignoredUpdates, settings.backupDirectory, showContextMenu, useInstalledModsContext]);
+  }, [mods, selectedMods, modBackups, ignoredUpdates, settings.backupDirectory, showContextMenu, useInstalledModsContext, isUpdating]);
 
   const handleContextAction = useCallback(async (action: string, data: { mod: BaseMod; selected: BaseMod[] }) => {
     const { mod, selected } = data;
