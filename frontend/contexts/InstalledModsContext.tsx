@@ -186,7 +186,8 @@ export function InstalledModsProvider({ children }: { children: ReactNode }) {
           } else {
             // Only mark as failed if not in retry-queued state
             // Failed state should only be set by mod-state events after all retries are exhausted
-            if (currentState !== "retry-queued") {
+            const stateToCheck = currentState as ModState;
+            if (stateToCheck !== undefined && stateToCheck !== "retry-queued") {
               newMap.set(modId, "failed");
             }
           }
@@ -200,6 +201,21 @@ export function InstalledModsProvider({ children }: { children: ReactNode }) {
             const newMap = new Map(prev);
             newMap.delete(modId);
             return newMap;
+          });
+          
+          // Check if this mod is already in the list
+          // If not, it's a newly downloaded mod and we should refresh the list
+          setMods(prevMods => {
+            const modExists = prevMods.some(m => m.modId === modId);
+            if (!modExists && settings.modsPath) {
+              // This is a newly downloaded mod - refresh the list to include it
+              console.log(`[INSTALLED_MODS] Mod ${modId} not found in list, refreshing...`);
+              // Reload installed mods asynchronously
+              loadInstalledMods(settings.modsPath).catch(err => {
+                console.error(`[INSTALLED_MODS] Failed to refresh mods list after download:`, err);
+              });
+            }
+            return prevMods;
           });
         } else {
           // Handle error - but only if not in retry-queued state

@@ -131,7 +131,8 @@ export function ModsProvider({ children }: { children: ReactNode }) {
           } else {
             // Only mark as failed if not in retry-queued state
             // Failed state should only be set by mod-state events after all retries are exhausted
-            if (currentState !== "retry-queued") {
+            const stateToCheck = currentState as ModState;
+            if (stateToCheck !== undefined && stateToCheck !== "retry-queued") {
               newMap.set(modId, "failed");
             }
           }

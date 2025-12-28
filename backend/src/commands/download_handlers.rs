@@ -155,6 +155,18 @@ pub async fn download_mod(
         drop(dl_final);
     }
     
+    // Emit mod-state: completed event
+    let _ = app.emit("mod-state", serde_json::json!({
+        "modId": mod_id,
+        "state": "completed"
+    }));
+    
+    // Emit mod-updated event to notify frontend that mod was successfully downloaded and installed
+    let _ = app.emit("mod-updated", serde_json::json!({
+        "modId": mod_id,
+        "success": true,
+    }));
+    
     Ok(serde_json::json!({
         "modId": downloaded_mod.mod_id,
         "modPath": mod_path.to_string_lossy(),
