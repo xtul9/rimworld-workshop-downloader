@@ -138,9 +138,19 @@ impl ModUpdater {
             return Err(format!("Source mod folder not found: {:?}", source_path));
         }
 
+        // Verify source mod is complete before copying
+        if !Self::verify_mod_complete(&source_path) {
+            return Err(format!("Source mod at {:?} appears incomplete or invalid. Refusing to copy.", source_path));
+        }
+
         eprintln!("[ModUpdater] Copying mod from {:?} to {:?}", source_path, mod_destination_path);
         copy_dir_all_async(&source_path, &mod_destination_path).await
             .map_err(|e| format!("Failed to copy mod: {}", e))?;
+
+        // Verify copied mod is complete
+        if !Self::verify_mod_complete(&mod_destination_path) {
+            return Err(format!("Copied mod at {:?} appears incomplete. Copy may have failed.", mod_destination_path));
+        }
 
         // Ensure PublishedFileId.txt exists after copying
         Self::ensure_published_file_id(&mod_destination_path, mod_id).await
@@ -219,6 +229,36 @@ impl ModUpdater {
         
         eprintln!("[ModUpdater] Created/updated PublishedFileId.txt at {:?} with ID {}", file_id_path, mod_id);
         Ok(())
+    }
+
+    /// Verify that a mod is complete before copying
+    fn verify_mod_complete(mod_path: &Path) -> bool {
+        // Check if mod folder exists and is a directory
+        if !mod_path.exists() || !mod_path.is_dir() {
+            eprintln!("[ModUpdater] Mod path does not exist or is not a directory: {:?}", mod_path);
+            return false;
+        }
+        
+        // Check if folder has any content
+        let has_content = if let Ok(entries) = fs::read_dir(mod_path) {
+            entries.take(1).count() > 0
+        } else {
+            false
+        };
+        
+        if !has_content {
+            eprintln!("[ModUpdater] Mod folder is empty: {:?}", mod_path);
+            return false;
+        }
+        
+        // Check for About folder (essential for RimWorld mods)
+        let about_path = mod_path.join("About");
+        if !about_path.exists() || !about_path.is_dir() {
+            eprintln!("[ModUpdater] Mod missing About folder: {:?}", mod_path);
+            return false;
+        }
+        
+        true
     }
 }
 

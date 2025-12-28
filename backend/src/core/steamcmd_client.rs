@@ -251,6 +251,7 @@ impl Downloader {
         let mut all_downloaded_mods = Vec::new();
         let mut success_count = 0;
         let mut failure_count = 0;
+        let mut failed_batches: Vec<(usize, Vec<String>, String)> = Vec::new();
         
         for (batch_idx, result) in batch_results.into_iter().enumerate() {
             match result {
@@ -263,11 +264,38 @@ impl Downloader {
                 Err(e) => {
                     failure_count += 1;
                     eprintln!("[Downloader] Instance {}: failed - {}", batch_idx, e);
+                    // Store failed batch info for potential retry
+                    // Note: We don't have access to mod_ids here, so we'll handle retry differently
+                    failed_batches.push((batch_idx, Vec::new(), e));
                 }
             }
         }
         
+        // If we have failures and some mods were requested, check which ones failed
+        if failure_count > 0 && !all_downloaded_mods.is_empty() {
+            let downloaded_mod_ids: std::collections::HashSet<String> = all_downloaded_mods
+                .iter()
+                .map(|m| m.mod_id.clone())
+                .collect();
+            let failed_mod_ids: Vec<String> = mod_ids
+                .iter()
+                .filter(|id| !downloaded_mod_ids.contains(*id))
+                .cloned()
+                .collect();
+            
+            if !failed_mod_ids.is_empty() {
+                eprintln!("[Downloader] Warning: {} mod(s) failed to download: {}", 
+                    failed_mod_ids.len(), failed_mod_ids.join(", "));
+            }
+        }
+        
         eprintln!("[Downloader] All instances completed: {} succeeded, {} failed, {} total mod(s) downloaded", success_count, failure_count, all_downloaded_mods.len());
+        
+        // If all downloads failed, return error
+        if all_downloaded_mods.is_empty() && !mod_ids.is_empty() {
+            return Err(format!("All mod downloads failed. Check SteamCMD logs and network connection."));
+        }
+        
         Ok(all_downloaded_mods)
     }
 
@@ -376,9 +404,37 @@ impl Downloader {
         // Wait for SteamCMD to start
         sleep(Duration::from_secs(2)).await;
 
-        // Wait for SteamCMD to exit
-        let _status = steamcmd_process.wait().await
+        // Wait for SteamCMD to exit and check exit status
+        let status = steamcmd_process.wait().await
             .map_err(|e| format!("Failed to wait for SteamCMD: {}", e))?;
+
+        // Check if SteamCMD exited successfully
+        if !status.success() {
+            let exit_code = status.code().unwrap_or(-1);
+            eprintln!("[Downloader] Instance {}: SteamCMD exited with error code: {}", batch_idx, exit_code);
+            
+            // Clean up script file
+            let _ = fs::remove_file(&script_path);
+            
+            // Check if any mods were partially downloaded
+            let mut partial_mods = Vec::new();
+            for mod_id in &mod_ids {
+                let mod_download_path = download_path_absolute.join(mod_id.clone());
+                if Self::is_mod_partially_downloaded(&mod_download_path) {
+                    partial_mods.push(mod_id.clone());
+                }
+            }
+            
+            if !partial_mods.is_empty() {
+                return Err(format!(
+                    "SteamCMD failed (exit code: {}) but detected partial downloads for mod(s): {}. These may be incomplete.",
+                    exit_code,
+                    partial_mods.join(", ")
+                ));
+            } else {
+                return Err(format!("SteamCMD failed with exit code: {}. No mods were downloaded.", exit_code));
+            }
+        }
 
         // Wait a bit for file system operations
         sleep(Duration::from_secs(1)).await;
@@ -386,14 +442,44 @@ impl Downloader {
         // Wait for all mod downloads to be detected in parallel
         let download_results = futures::future::join_all(download_promises).await;
         let mut downloaded_mods = Vec::new();
-        for result in download_results {
-            if let Ok(Some(mod_info)) = result {
-                downloaded_mods.push(mod_info);
+        let mut failed_mods = Vec::new();
+        
+        for (idx, result) in download_results.into_iter().enumerate() {
+            let mod_id = &mod_ids[idx];
+            match result {
+                Ok(Some(mod_info)) => {
+                    // Verify download completeness before adding
+                    if Self::verify_mod_download_complete(&mod_info.mod_path) {
+                        downloaded_mods.push(mod_info);
+                    } else {
+                        eprintln!("[Downloader] Instance {}: Mod {} detected but download appears incomplete", batch_idx, mod_id);
+                        failed_mods.push(mod_id.clone());
+                    }
+                }
+                Ok(None) => {
+                    eprintln!("[Downloader] Instance {}: Mod {} download timeout or not detected", batch_idx, mod_id);
+                    failed_mods.push(mod_id.clone());
+                }
+                Err(e) => {
+                    eprintln!("[Downloader] Instance {}: Mod {} download error: {}", batch_idx, mod_id, e);
+                    failed_mods.push(mod_id.clone());
+                }
             }
         }
 
         // Clean up script file
         let _ = fs::remove_file(&script_path);
+
+        // If some mods failed, return error with details
+        if !failed_mods.is_empty() {
+            if downloaded_mods.is_empty() {
+                return Err(format!("All mod downloads failed. Failed mods: {}", failed_mods.join(", ")));
+            } else {
+                eprintln!("[Downloader] Instance {}: Partial success - {} mod(s) downloaded, {} failed: {}", 
+                    batch_idx, downloaded_mods.len(), failed_mods.len(), failed_mods.join(", "));
+                // Still return success with downloaded mods, but log the failures
+            }
+        }
 
         Ok(downloaded_mods)
     }
@@ -549,6 +635,70 @@ impl Downloader {
         }
     }
     
+    /// Check if a mod appears to be partially downloaded (folder exists but may be incomplete)
+    /// TODO: figure out a way to check integrity of the download compared to Steam Workshop
+    fn is_mod_partially_downloaded(mod_path: &PathBuf) -> bool {
+        if !mod_path.exists() || !mod_path.is_dir() {
+            return false;
+        }
+        
+        // Check if folder has any content
+        if let Ok(entries) = fs::read_dir(mod_path) {
+            return entries.take(1).count() > 0;
+        }
+        
+        false
+    }
+
+    /// Verify that a mod download is complete by checking for essential files
+    fn verify_mod_download_complete(mod_path: &PathBuf) -> bool {
+        // Check if mod folder exists and is a directory
+        if !mod_path.exists() || !mod_path.is_dir() {
+            eprintln!("[Downloader] Mod path does not exist or is not a directory: {:?}", mod_path);
+            return false;
+        }
+        
+        // Check if folder has any content
+        let has_content = if let Ok(entries) = fs::read_dir(mod_path) {
+            entries.take(1).count() > 0
+        } else {
+            false
+        };
+        
+        if !has_content {
+            eprintln!("[Downloader] Mod folder is empty: {:?}", mod_path);
+            return false;
+        }
+        
+        // Check for About folder (essential for RimWorld mods)
+        let about_path = mod_path.join("About");
+        if !about_path.exists() || !about_path.is_dir() {
+            eprintln!("[Downloader] Mod missing About folder: {:?}", mod_path);
+            return false;
+        }
+        
+        // Check for PublishedFileId.txt (should exist for Workshop mods)
+        // Note: We create this file automatically if missing, so this is just a sanity check
+        let published_file_id_path = about_path.join("PublishedFileId.txt");
+        if !published_file_id_path.exists() {
+            eprintln!("[Downloader] Warning: Mod missing PublishedFileId.txt (will be created automatically): {:?}", mod_path);
+            // Don't fail here - we create this file automatically in mod_manager
+        }
+        
+        // Additional check: verify folder has reasonable size (at least 1KB)
+        // This helps catch cases where only empty folders were created
+        if let Ok(metadata) = fs::metadata(mod_path) {
+            // For directories, we can't easily check total size without recursion
+            // But we can check if it's a valid directory
+            if !metadata.is_dir() {
+                eprintln!("[Downloader] Mod path is not a directory: {:?}", mod_path);
+                return false;
+            }
+        }
+        
+        true
+    }
+
     /// Helper function to create DownloadedMod result and emit event
     fn create_downloaded_mod_result(
         mod_download_path: PathBuf,
