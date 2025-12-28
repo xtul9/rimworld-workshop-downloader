@@ -35,11 +35,11 @@ pub async fn download_mod(
     let mod_id_for_download = mod_id.clone();
     let downloader_for_download = get_downloader();
     let mut dl_guard = downloader_for_download.lock().await;
-    let downloaded_mods_result = dl_guard.download_mods(&[mod_id_for_download], Some(&app)).await;
+    let mod_receiver_result = dl_guard.download_mods(&[mod_id_for_download], Some(&app)).await;
     drop(dl_guard); // Release lock before await
     
-    let downloaded_mods = match downloaded_mods_result {
-        Ok(mods) => mods,
+    let mut mod_receiver = match mod_receiver_result {
+        Ok(receiver) => receiver,
         Err(e) => {
             // Cleanup on error
             let downloader_cleanup = get_downloader();
@@ -50,14 +50,24 @@ pub async fn download_mod(
         }
     };
     
-    if downloaded_mods.is_empty() {
-        let downloader = get_downloader();
-        let mut dl = downloader.lock().await;
-        dl.mark_downloaded(&mod_id);
-        return Err("Mod download completed but no mod folder was created".to_string());
-    }
-    
-    let downloaded_mod = &downloaded_mods[0];
+    // Wait for the mod to be downloaded
+    let downloaded_mod = match mod_receiver.recv().await {
+        Some(Ok(mod_info)) => mod_info,
+        Some(Err(e)) => {
+            let downloader = get_downloader();
+            let mut dl = downloader.lock().await;
+            dl.mark_downloaded(&mod_id);
+            drop(dl);
+            return Err(format!("Mod download failed: {}", e));
+        }
+        None => {
+            let downloader = get_downloader();
+            let mut dl = downloader.lock().await;
+            dl.mark_downloaded(&mod_id);
+            drop(dl);
+            return Err("Mod download completed but no mod folder was created".to_string());
+        }
+    };
     
     // Emit installing event before copying
     let _ = app.emit("mod-state", serde_json::json!({

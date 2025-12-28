@@ -3,10 +3,11 @@ use std::fs;
 use std::time::Duration;
 use tokio::time::sleep;
 use tokio::process::Command;
+use tokio::sync::mpsc;
 use futures;
 use tauri::{AppHandle, Emitter};
 use notify::{Watcher, RecommendedWatcher, RecursiveMode, Event};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex};
 
 pub struct Downloader {
     steamcmd_path: PathBuf,
@@ -33,8 +34,13 @@ impl Downloader {
 
     /// Find SteamCMD executable from application resources or PATH
     pub async fn find_steamcmd_executable(&self) -> Result<PathBuf, String> {
+        Self::find_steamcmd_executable_static(&self.steamcmd_path).await
+    }
+    
+    /// Static version of find_steamcmd_executable for use in spawned tasks
+    async fn find_steamcmd_executable_static(steamcmd_path: &PathBuf) -> Result<PathBuf, String> {
         // Try to find in application resources first
-        if let Some(resource_path) = self.find_steamcmd_from_resources().await? {
+        if let Some(resource_path) = Self::find_steamcmd_from_resources_static(steamcmd_path).await? {
             return Ok(resource_path);
         }
 
@@ -45,7 +51,7 @@ impl Downloader {
             "steamcmd"
         };
         
-        let local_path = self.steamcmd_path.join(steamcmd_exe);
+        let local_path = steamcmd_path.join(steamcmd_exe);
         if local_path.exists() {
             return Ok(local_path);
         }
@@ -68,9 +74,9 @@ impl Downloader {
 
         Err(format!("SteamCMD not found in resources, at {:?}, or in PATH", local_path))
     }
-
-    /// Find SteamCMD from application resources (bundled with app)
-    async fn find_steamcmd_from_resources(&self) -> Result<Option<PathBuf>, String> {
+    
+    /// Static version of find_steamcmd_from_resources for use in spawned tasks
+    async fn find_steamcmd_from_resources_static(steamcmd_path: &PathBuf) -> Result<Option<PathBuf>, String> {
         let is_windows = cfg!(target_os = "windows");
         let steamcmd_exe = if is_windows { "steamcmd.exe" } else { "steamcmd" };
         
@@ -104,7 +110,7 @@ impl Downloader {
             exe_dir.join("..").join(&steamcmd_name_with_suffix),
             exe_dir.join("..").join("resources").join(&steamcmd_name_with_suffix),
             PathBuf::from("bin").join("steamcmd").join(steamcmd_exe),
-            self.steamcmd_path.join(steamcmd_exe),
+            steamcmd_path.join(steamcmd_exe),
         ];
         
         for path in possible_paths {
@@ -175,30 +181,214 @@ impl Downloader {
     /// Download mods using SteamCMD with parallel instances for better performance
     /// For small batches (<=4 mods), uses single instance. For larger batches, uses up to 4 parallel instances.
     /// If mod_sizes is provided, mods are balanced by size across instances.
-    pub async fn download_mods(&mut self, mod_ids: &[String], app: Option<&AppHandle>) -> Result<Vec<DownloadedMod>, String> {
+    /// Returns a receiver channel that yields mods as they are downloaded
+    pub async fn download_mods(&mut self, mod_ids: &[String], app: Option<&AppHandle>) -> Result<mpsc::Receiver<Result<DownloadedMod, String>>, String> {
         self.download_mods_with_sizes(mod_ids, None, app).await
     }
 
     /// Download mods with optional size information for load balancing
+    /// Returns a receiver channel that yields mods as they are downloaded
+    /// The download process runs in the background
     pub async fn download_mods_with_sizes(
         &mut self,
         mod_ids: &[String],
         mod_sizes: Option<&std::collections::HashMap<String, u64>>,
         app: Option<&AppHandle>,
-    ) -> Result<Vec<DownloadedMod>, String> {
+    ) -> Result<mpsc::Receiver<Result<DownloadedMod, String>>, String> {
+        const MAX_RETRIES: u32 = 6;
+        let (tx, rx) = mpsc::channel(100); // Buffer up to 100 mods
+        
+        // Clone necessary data for background task
+        let mod_ids_clone = mod_ids.to_vec();
+        let mod_sizes_clone = mod_sizes.cloned();
+        let app_clone = app.cloned();
+        let steamcmd_path = self.steamcmd_path.clone();
+        let download_path = self.download_path.clone();
+        let tx_clone = tx.clone();
+        
+        // Spawn background task to handle downloads
+        // This allows the function to return the channel immediately
+        tokio::spawn(async move {
+            let mut remaining_mod_ids = mod_ids_clone;
+            let mut remaining_mod_sizes = mod_sizes_clone;
+            let mut retry_count = 0;
+            
+            while !remaining_mod_ids.is_empty() && retry_count <= MAX_RETRIES {
+                if retry_count > 0 {
+                    eprintln!("[Downloader] Retry attempt {}: {} mod(s) remaining (attempt {}/{})", 
+                        retry_count, remaining_mod_ids.len(), retry_count, MAX_RETRIES);
+                    
+                    // Emit retry-queued events for remaining mods
+                    if let Some(app_handle) = &app_clone {
+                        for mod_id in &remaining_mod_ids {
+                            let _ = app_handle.emit("mod-state", serde_json::json!({
+                                "modId": mod_id,
+                                "state": "retry-queued",
+                                "retryAttempt": retry_count,
+                                "maxRetries": MAX_RETRIES
+                            }));
+                        }
+                    }
+                    
+                    // Exponential backoff: 1s, 2s, 4s, 8s, 16s, 32s
+                    let backoff_seconds = 2_u64.pow(retry_count - 1);
+                    eprintln!("[Downloader] Waiting {} seconds before retry...", backoff_seconds);
+                    sleep(Duration::from_secs(backoff_seconds)).await;
+                }
+            
+            // Track which mods will be retried (before attempt) to avoid showing "failed" state
+            let mods_to_retry: std::collections::HashSet<String> = if retry_count < MAX_RETRIES {
+                remaining_mod_ids.iter().cloned().collect()
+            } else {
+                std::collections::HashSet::new()
+            };
+            
+            // Attempt download (pass mods_to_retry only if we're in retry loop)
+            let mods_to_retry_for_attempt = if retry_count > 0 {
+                Some(mods_to_retry.clone())
+            } else {
+                None
+            };
+            
+            let attempt_result = Self::download_mods_single_attempt_static(
+                &steamcmd_path,
+                &download_path,
+                &remaining_mod_ids,
+                remaining_mod_sizes.as_ref(),
+                app_clone.as_ref(),
+                mods_to_retry_for_attempt.as_ref(),
+                Some(tx_clone.clone()),
+            ).await;
+            
+            match attempt_result {
+                Ok((downloaded_mods, _failed_mod_ids)) => {
+                    // Mods were already sent to channel in wait_for_mod_download_static
+                    // We just track which mods were successfully downloaded for retry logic
+                    let downloaded_mod_ids: std::collections::HashSet<String> = downloaded_mods
+                        .iter()
+                        .map(|m| m.mod_id.clone())
+                        .collect();
+                    
+                    // Check which mods still failed (mods that weren't successfully downloaded)
+                    remaining_mod_ids = remaining_mod_ids
+                        .into_iter()
+                        .filter(|id| !downloaded_mod_ids.contains(id))
+                        .collect();
+                    
+                    // Filter mod_sizes to only include remaining mods
+                    if let Some(ref sizes) = remaining_mod_sizes {
+                        remaining_mod_sizes = Some(
+                            sizes.iter()
+                                .filter(|(id, _)| remaining_mod_ids.contains(*id))
+                                .map(|(id, size)| (id.clone(), *size))
+                                .collect()
+                        );
+                    }
+                    
+                    // If all mods downloaded, we're done
+                    if remaining_mod_ids.is_empty() {
+                        break;
+                    }
+                    
+                    // Emit retry-queued IMMEDIATELY for mods that will be retried
+                    // This must happen BEFORE any error handling to avoid showing "failed" state
+                    if retry_count < MAX_RETRIES {
+                        if let Some(app_handle) = &app_clone {
+                            for mod_id in &remaining_mod_ids {
+                                let _ = app_handle.emit("mod-state", serde_json::json!({
+                                    "modId": mod_id,
+                                    "state": "retry-queued",
+                                    "retryAttempt": retry_count + 1,
+                                    "maxRetries": MAX_RETRIES
+                                }));
+                            }
+                        }
+                    } else {
+                        // All retries exhausted - emit failed state for remaining mods
+                        if let Some(app_handle) = &app_clone {
+                            for mod_id in &remaining_mod_ids {
+                                let _ = app_handle.emit("mod-state", serde_json::json!({
+                                    "modId": mod_id,
+                                    "state": "failed",
+                                    "error": format!("Download failed after {} attempts", MAX_RETRIES)
+                                }));
+                            }
+                        }
+                        // Send errors to channel for final failures
+                        for _failed_mod_id in &remaining_mod_ids {
+                            let _ = tx_clone.send(Err(format!("Download failed after {} attempts", MAX_RETRIES))).await;
+                        }
+                    }
+                    
+                    retry_count += 1;
+                }
+                Err(e) => {
+                    eprintln!("[Downloader] Download attempt {} failed: {}", retry_count + 1, e);
+                    retry_count += 1;
+                    
+                    // If we've exceeded max retries, send remaining mods as errors and close channel
+                    if retry_count > MAX_RETRIES {
+                        // Send remaining mods as errors
+                        for _mod_id in &remaining_mod_ids {
+                            let _ = tx_clone.send(Err(format!("Download failed after {} attempts", MAX_RETRIES))).await;
+                        }
+                        
+                        if remaining_mod_ids.is_empty() {
+                            eprintln!("[Downloader] All mod downloads failed after {} attempts. Last error: {}", 
+                                MAX_RETRIES, e);
+                        } else {
+                            eprintln!("[Downloader] Some mod downloads failed after {} attempts. Failed mods: {}. Last error: {}", 
+                                MAX_RETRIES, remaining_mod_ids.join(", "), e);
+                        }
+                        // Close channel and exit task
+                        drop(tx_clone);
+                        return;
+                    }
+                }
+            } // Close match attempt_result
+            } // Close while loop
+            
+            // If we still have remaining mods after max retries, they should already be marked as failed
+            // in the match block above, so we just log here
+            if !remaining_mod_ids.is_empty() {
+                eprintln!("[Downloader] Max retries ({}) exceeded for {} mod(s): {}", 
+                    MAX_RETRIES, remaining_mod_ids.len(), remaining_mod_ids.join(", "));
+            }
+            
+            // Close channel to signal completion
+            drop(tx_clone);
+        }); // Close tokio::spawn
+        
+        // Return channel immediately - downloads happen in background
+        Ok(rx)
+    }
+
+    /// Single download attempt without retry logic (static version for use in spawned tasks)
+    /// Returns tuple of (downloaded_mods, failed_mod_ids)
+    async fn download_mods_single_attempt_static(
+        steamcmd_path: &PathBuf,
+        download_path: &PathBuf,
+        mod_ids: &[String],
+        mod_sizes: Option<&std::collections::HashMap<String, u64>>,
+        app: Option<&AppHandle>,
+        mods_to_retry: Option<&std::collections::HashSet<String>>,
+        _tx: Option<mpsc::Sender<Result<DownloadedMod, String>>>,
+    ) -> Result<(Vec<DownloadedMod>, Vec<String>), String> {
+        // Convert mods_to_retry to owned Option for passing to download_mods_batch
+        let mods_to_retry_owned = mods_to_retry.map(|set| set.clone());
         if mod_ids.is_empty() {
-            return Ok(vec![]);
+            return Ok((vec![], vec![]));
         }
 
         // Delete appworkshop file if it exists
-        let appworkshop_path = self.steamcmd_path
+        let appworkshop_path = steamcmd_path
             .join("steamapps")
             .join("workshop")
             .join("appworkshop_294100.acf");
         let _ = fs::remove_file(&appworkshop_path);
 
         // Ensure download directory exists
-        fs::create_dir_all(&self.download_path)
+        fs::create_dir_all(download_path)
             .map_err(|e| format!("Failed to create download directory: {}", e))?;
 
         const MAX_PARALLEL_INSTANCES: usize = 4; // Hard limit - never exceed this
@@ -225,23 +415,27 @@ impl Downloader {
         }
         
         let mut batch_futures = Vec::new();
-        let steamcmd_executable = self.find_steamcmd_executable().await?;
+        let steamcmd_executable = Self::find_steamcmd_executable_static(steamcmd_path).await?;
         
         for (batch_idx, batch) in batches.into_iter().enumerate() {
             if batch.is_empty() {
                 continue;
             }
             
-            let steamcmd_path = self.steamcmd_path.clone();
-            let download_path = self.download_path.clone();
+            let steamcmd_path_clone = steamcmd_path.clone();
+            let download_path_clone = download_path.clone();
             
+            let mods_to_retry_for_batch = mods_to_retry_owned.clone();
+            let tx_for_batch = _tx.clone();
             let future = Self::download_mods_batch(
                 steamcmd_executable.clone(),
-                steamcmd_path,
-                download_path,
+                steamcmd_path_clone,
+                download_path_clone,
                 batch,
                 batch_idx,
-                app.cloned()
+                app.cloned(),
+                mods_to_retry_for_batch,
+                tx_for_batch,
             );
             batch_futures.push(future);
         }
@@ -249,16 +443,18 @@ impl Downloader {
         // Wait for all batches to complete in parallel
         let batch_results = futures::future::join_all(batch_futures).await;
         let mut all_downloaded_mods = Vec::new();
+        let mut all_failed_mod_ids = Vec::new();
         let mut success_count = 0;
         let mut failure_count = 0;
         let mut failed_batches: Vec<(usize, Vec<String>, String)> = Vec::new();
         
         for (batch_idx, result) in batch_results.into_iter().enumerate() {
             match result {
-                Ok(mods) => {
+                Ok((mods, failed_ids)) => {
                     let mods_count = mods.len();
                     success_count += 1;
                     all_downloaded_mods.extend(mods);
+                    all_failed_mod_ids.extend(failed_ids);
                     eprintln!("[Downloader] Instance {}: completed successfully ({} mod(s))", batch_idx, mods_count);
                 }
                 Err(e) => {
@@ -296,10 +492,13 @@ impl Downloader {
             return Err(format!("All mod downloads failed. Check SteamCMD logs and network connection."));
         }
         
-        Ok(all_downloaded_mods)
+        // Return tuple of (downloaded_mods, failed_mod_ids)
+        Ok((all_downloaded_mods, all_failed_mod_ids))
     }
 
     /// Download a batch of mods using a single SteamCMD instance (static version for parallel execution)
+    /// Sends mods to channel immediately as they are downloaded
+    /// Returns tuple of (downloaded_mods, failed_mod_ids) for tracking purposes
     async fn download_mods_batch(
         steamcmd_executable: PathBuf,
         steamcmd_path: PathBuf,
@@ -307,7 +506,9 @@ impl Downloader {
         mod_ids: Vec<String>,
         batch_idx: usize,
         app: Option<AppHandle>,
-    ) -> Result<Vec<DownloadedMod>, String> {
+        mods_to_retry: Option<std::collections::HashSet<String>>,
+        tx: Option<mpsc::Sender<Result<DownloadedMod, String>>>,
+    ) -> Result<(Vec<DownloadedMod>, Vec<String>), String> {
         eprintln!("[Downloader] Instance {}: starting download", batch_idx);
 
         // Get absolute paths
@@ -362,13 +563,26 @@ impl Downloader {
             current_dir.join(&script_path)
         };
 
+        // Track failed mods detected from SteamCMD output
+        let failed_mods_tracker: Arc<Mutex<std::collections::HashSet<String>>> = Arc::new(Mutex::new(std::collections::HashSet::new()));
+        
         // Start watching folders before starting download
+        // Each promise will detect mods when downloaded, but won't send to channel yet
+        // We'll check failed_mods_tracker before sending to channel
         let mut download_promises = Vec::new();
         for mod_id in &mod_ids {
             let mod_download_path = download_path_absolute.join(mod_id.clone());
             let mod_id_clone = mod_id.clone();
             let app_clone = app.clone();
-            download_promises.push(Self::wait_for_mod_download_static(mod_download_path, mod_id_clone, app_clone));
+            let tx_clone = tx.clone();
+            let failed_mods_tracker_clone = failed_mods_tracker.clone();
+            download_promises.push(Self::wait_for_mod_download_static(
+                mod_download_path, 
+                mod_id_clone, 
+                app_clone,
+                tx_clone,
+                Some(failed_mods_tracker_clone), // Pass failed_mods_tracker
+            ));
         }
 
         // Start SteamCMD process
@@ -381,10 +595,14 @@ impl Downloader {
             .spawn()
             .map_err(|e| format!("Failed to spawn SteamCMD: {}", e))?;
 
-        // Track failed mods detected from SteamCMD output
-        let failed_mods_tracker: Arc<Mutex<std::collections::HashSet<String>>> = Arc::new(Mutex::new(std::collections::HashSet::new()));
+        // failed_mods_tracker was already created above, now clone for stdout/stderr tasks
         let failed_mods_stdout = failed_mods_tracker.clone();
         let failed_mods_stderr = failed_mods_tracker.clone();
+        
+        // Track which mods will be retried (to avoid showing "failed" state)
+        // Clone for each task separately
+        let mods_to_retry_stdout = mods_to_retry.as_ref().map(|set| set.clone());
+        let mods_to_retry_stderr = mods_to_retry.as_ref().map(|set| set.clone());
         
         // Parse SteamCMD output to detect mod states
         let stdout = steamcmd_process.stdout.take();
@@ -403,7 +621,7 @@ impl Downloader {
                 let mut lines = reader.lines();
                 while let Ok(Some(line)) = lines.next_line().await {
                     // Parse SteamCMD output to detect mod states
-                    Self::parse_steamcmd_output(&line, &mod_ids_stdout, app_stdout.as_ref(), Some(&failed_mods_stdout));
+                    Self::parse_steamcmd_output(&line, &mod_ids_stdout, app_stdout.as_ref(), Some(&failed_mods_stdout), mods_to_retry_stdout.as_ref());
                 }
             })
         } else {
@@ -417,7 +635,7 @@ impl Downloader {
                 let mut lines = reader.lines();
                 while let Ok(Some(line)) = lines.next_line().await {
                     // Parse SteamCMD output to detect mod states
-                    Self::parse_steamcmd_output(&line, &mod_ids_stderr, app_stderr.as_ref(), Some(&failed_mods_stderr));
+                    Self::parse_steamcmd_output(&line, &mod_ids_stderr, app_stderr.as_ref(), Some(&failed_mods_stderr), mods_to_retry_stderr.as_ref());
                 }
             })
         } else {
@@ -463,6 +681,8 @@ impl Downloader {
         sleep(Duration::from_secs(1)).await;
 
         // Wait for all mod downloads to be detected in parallel
+        // Note: Each promise sends mods to channel immediately when downloaded,
+        // so we're just waiting here to collect results for tracking/failure reporting
         let download_results = futures::future::join_all(download_promises).await;
         let mut downloaded_mods = Vec::new();
         let mut failed_mods = Vec::new();
@@ -480,6 +700,10 @@ impl Downloader {
             if steamcmd_failed_mods.contains(mod_id) {
                 eprintln!("[Downloader] Instance {}: Mod {} failed according to SteamCMD output", batch_idx, mod_id);
                 failed_mods.push(mod_id.clone());
+                // Send error to channel if tx is available
+                if let Some(ref tx_ref) = tx {
+                    let _ = tx_ref.send(Err(format!("Download failed for mod {}", mod_id))).await;
+                }
                 continue;
             }
             
@@ -487,19 +711,33 @@ impl Downloader {
                 Ok(Some(mod_info)) => {
                     // Verify download completeness before adding
                     if Self::verify_mod_download_complete(&mod_info.mod_path) {
-                        downloaded_mods.push(mod_info);
+                        downloaded_mods.push(mod_info.clone());
+                        // Mod was already sent to channel in wait_for_mod_download_static
+                        // We just keep it here for tracking
                     } else {
                         eprintln!("[Downloader] Instance {}: Mod {} detected but download appears incomplete", batch_idx, mod_id);
                         failed_mods.push(mod_id.clone());
+                        // Send error to channel if tx is available
+                        if let Some(ref tx_ref) = tx {
+                            let _ = tx_ref.send(Err(format!("Download incomplete for mod {}", mod_id))).await;
+                        }
                     }
                 }
                 Ok(None) => {
                     eprintln!("[Downloader] Instance {}: Mod {} download timeout or not detected", batch_idx, mod_id);
                     failed_mods.push(mod_id.clone());
+                    // Send error to channel if tx is available
+                    if let Some(ref tx_ref) = tx {
+                        let _ = tx_ref.send(Err(format!("Download timeout for mod {}", mod_id))).await;
+                    }
                 }
                 Err(e) => {
                     eprintln!("[Downloader] Instance {}: Mod {} download error: {}", batch_idx, mod_id, e);
                     failed_mods.push(mod_id.clone());
+                    // Send error to channel if tx is available
+                    if let Some(ref tx_ref) = tx {
+                        let _ = tx_ref.send(Err(format!("Download error for mod {}: {}", mod_id, e))).await;
+                    }
                 }
             }
         }
@@ -518,14 +756,18 @@ impl Downloader {
             }
         }
 
-        Ok(downloaded_mods)
+        // Return tuple of (downloaded_mods, failed_mod_ids)
+        Ok((downloaded_mods, failed_mods))
     }
 
     /// Wait for a mod to be downloaded by watching the download folder (static version for Send)
+    /// Sends mod to channel immediately when downloaded (if tx is provided), but only if not in failed_mods_tracker
     async fn wait_for_mod_download_static(
         mod_download_path: PathBuf,
         mod_id: String,
         app: Option<AppHandle>,
+        tx: Option<mpsc::Sender<Result<DownloadedMod, String>>>,
+        failed_mods_tracker: Option<Arc<Mutex<std::collections::HashSet<String>>>>,
     ) -> Result<Option<DownloadedMod>, String> {
         let timeout = Duration::from_secs(600); // 10 minutes timeout
         let start_time = std::time::Instant::now();
@@ -535,7 +777,27 @@ impl Downloader {
             if metadata.is_dir() {
                 if let Ok(entries) = fs::read_dir(&mod_download_path) {
                     if entries.take(1).count() > 0 {
-                        return Self::create_downloaded_mod_result(mod_download_path, mod_id, app);
+                        // Check if mod is in failed_mods_tracker before sending to channel
+                        let should_send = if let Some(ref tracker) = failed_mods_tracker {
+                            let failed = tracker.lock().unwrap();
+                            !failed.contains(&mod_id)
+                        } else {
+                            true // If no tracker, send anyway
+                        };
+                        
+                        let result = Self::create_downloaded_mod_result(mod_download_path, mod_id.clone(), app);
+                        // Send to channel immediately if available and not failed
+                        if should_send {
+                            if let Some(ref tx_ref) = tx {
+                                if let Ok(Some(mod_info)) = &result {
+                                    let _ = tx_ref.send(Ok(mod_info.clone())).await;
+                                }
+                            }
+                            return result;
+                        } else {
+                            eprintln!("[Downloader] Mod {} detected but SteamCMD reported failure - not sending to channel", mod_id);
+                            return Ok(None);
+                        }
                     }
                 }
             }
@@ -545,14 +807,14 @@ impl Downloader {
         let watch_path = mod_download_path.parent()
             .ok_or_else(|| "Cannot get parent directory for watching".to_string())?;
         
-        // Create channel for file system events
-        let (tx, rx) = mpsc::channel();
+        // Create channel for file system events (use std::sync::mpsc for notify compatibility)
+        let (tx_fs, rx) = std::sync::mpsc::channel();
         let rx_shared = Arc::new(Mutex::new(rx));
         
         // Create watcher with minimal delay for faster detection
         let mut watcher: RecommendedWatcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
             if let Ok(event) = res {
-                let _ = tx.send(event);
+                let _ = tx_fs.send(event);
             }
         })
         .map_err(|e| format!("Failed to create file system watcher: {}", e))?;
@@ -566,6 +828,8 @@ impl Downloader {
         let mod_id_clone = mod_id.clone();
         let app_clone = app.clone();
         let rx_for_task = rx_shared.clone();
+        let tx_mod_channel = tx.clone();
+        let failed_mods_tracker_clone = failed_mods_tracker.clone();
         let watch_task = tokio::spawn(async move {
             loop {
                 // Check for timeout
@@ -591,34 +855,74 @@ impl Downloader {
                                 if metadata.is_dir() {
                                     if let Ok(entries) = fs::read_dir(&mod_download_path_clone) {
                                         if entries.take(1).count() > 0 {
-                                            return Self::create_downloaded_mod_result(
+                                            // Check if mod is in failed_mods_tracker before sending to channel
+                                            let should_send = if let Some(ref tracker) = failed_mods_tracker_clone {
+                                                let failed = tracker.lock().unwrap();
+                                                !failed.contains(&mod_id_clone)
+                                            } else {
+                                                true // If no tracker, send anyway
+                                            };
+                                            
+                                            let result = Self::create_downloaded_mod_result(
                                                 mod_download_path_clone, 
-                                                mod_id_clone, 
+                                                mod_id_clone.clone(), 
                                                 app_clone
                                             );
+                                            // Send to channel immediately if available and not failed
+                                            if should_send {
+                                                if let Some(ref tx_ref) = tx_mod_channel {
+                                                    if let Ok(Some(mod_info)) = &result {
+                                                        let _ = tx_ref.send(Ok(mod_info.clone())).await;
+                                                    }
+                                                }
+                                                return result;
+                                            } else {
+                                                eprintln!("[Downloader] Mod {} detected but SteamCMD reported failure - not sending to channel", mod_id_clone);
+                                                return Ok(None);
+                                            }
                                         }
                                     }
                                 }
                             }
                         }
                     }
-                    Ok(Err(mpsc::RecvTimeoutError::Timeout)) => {
+                    Ok(Err(std::sync::mpsc::RecvTimeoutError::Timeout)) => {
                         // Timeout - check if mod exists anyway (fallback polling)
                         if let Ok(metadata) = fs::metadata(&mod_download_path_clone) {
                             if metadata.is_dir() {
                                 if let Ok(entries) = fs::read_dir(&mod_download_path_clone) {
                                     if entries.take(1).count() > 0 {
-                                        return Self::create_downloaded_mod_result(
+                                        // Check if mod is in failed_mods_tracker before sending to channel
+                                        let should_send = if let Some(ref tracker) = failed_mods_tracker_clone {
+                                            let failed = tracker.lock().unwrap();
+                                            !failed.contains(&mod_id_clone)
+                                        } else {
+                                            true // If no tracker, send anyway
+                                        };
+                                        
+                                        let result = Self::create_downloaded_mod_result(
                                             mod_download_path_clone, 
-                                            mod_id_clone, 
+                                            mod_id_clone.clone(), 
                                             app_clone
                                         );
+                                        // Send to channel immediately if available and not failed
+                                        if should_send {
+                                            if let Some(ref tx_ref) = tx_mod_channel {
+                                                if let Ok(Some(mod_info)) = &result {
+                                                    let _ = tx_ref.send(Ok(mod_info.clone())).await;
+                                                }
+                                            }
+                                            return result;
+                                        } else {
+                                            eprintln!("[Downloader] Mod {} detected but SteamCMD reported failure - not sending to channel", mod_id_clone);
+                                            return Ok(None);
+                                        }
                                     }
                                 }
                             }
                         }
                     }
-                    Ok(Err(mpsc::RecvTimeoutError::Disconnected)) => {
+                    Ok(Err(std::sync::mpsc::RecvTimeoutError::Disconnected)) => {
                         // Channel closed, watcher stopped
                         break;
                     }
@@ -634,11 +938,31 @@ impl Downloader {
                 if metadata.is_dir() {
                     if let Ok(entries) = fs::read_dir(&mod_download_path_clone) {
                         if entries.take(1).count() > 0 {
-                            return Self::create_downloaded_mod_result(
+                            // Check if mod is in failed_mods_tracker before sending to channel
+                            let should_send = if let Some(ref tracker) = failed_mods_tracker_clone {
+                                let failed = tracker.lock().unwrap();
+                                !failed.contains(&mod_id_clone)
+                            } else {
+                                true // If no tracker, send anyway
+                            };
+                            
+                            let result = Self::create_downloaded_mod_result(
                                 mod_download_path_clone, 
-                                mod_id_clone, 
+                                mod_id_clone.clone(), 
                                 app_clone
                             );
+                            // Send to channel immediately if available and not failed
+                            if should_send {
+                                if let Some(ref tx_ref) = tx_mod_channel {
+                                    if let Ok(Some(mod_info)) = &result {
+                                        let _ = tx_ref.send(Ok(mod_info.clone())).await;
+                                    }
+                                }
+                                return result;
+                            } else {
+                                eprintln!("[Downloader] Mod {} detected but SteamCMD reported failure - not sending to channel", mod_id_clone);
+                                return Ok(None);
+                            }
                         }
                     }
                 }
@@ -662,7 +986,14 @@ impl Downloader {
                     if metadata.is_dir() {
                         if let Ok(entries) = fs::read_dir(&mod_download_path) {
                             if entries.take(1).count() > 0 {
-                                return Self::create_downloaded_mod_result(mod_download_path, mod_id, app);
+                                let result = Self::create_downloaded_mod_result(mod_download_path, mod_id.clone(), app);
+                                // Send to channel immediately if available
+                                if let Some(ref tx_ref) = tx {
+                                    if let Ok(Some(mod_info)) = &result {
+                                        let _ = tx_ref.send(Ok(mod_info.clone())).await;
+                                    }
+                                }
+                                return result;
                             }
                         }
                     }
@@ -746,13 +1077,7 @@ impl Downloader {
             .and_then(|n| n.to_str())
             .map(|s| s.to_string());
         
-        // Emit event for downloaded mod (download complete, ready for installation)
         if let Some(app_handle) = &app {
-            let _ = app_handle.emit("mod-state", serde_json::json!({
-                "modId": mod_id,
-                "state": "download-complete"
-            }));
-            // Keep old event for backward compatibility
             let _ = app_handle.emit("mod-downloaded", serde_json::json!({
                 "modId": mod_id,
             }));
@@ -771,6 +1096,7 @@ impl Downloader {
         mod_ids: &[String], 
         app: Option<&AppHandle>,
         failed_mods_tracker: Option<&Arc<Mutex<std::collections::HashSet<String>>>>,
+        mods_to_retry: Option<&std::collections::HashSet<String>>,
     ) {
         let line_trimmed = line.trim();
         let line_lower = line_trimmed.to_lowercase();
@@ -799,13 +1125,22 @@ impl Downloader {
                     failed.insert(mod_id.clone());
                 }
                 
+                // Only emit "failed" if this mod won't be retried
+                // If it will be retried, "retry-queued" will be emitted in retry logic
+                let will_retry = mods_to_retry.map(|set| set.contains(mod_id)).unwrap_or(false);
+                
                 if let Some(app_handle) = app {
-                    eprintln!("[SteamCMD Parser] Mod {} detected as failed", mod_id);
-                    let _ = app_handle.emit("mod-state", serde_json::json!({
-                        "modId": mod_id,
-                        "state": "failed",
-                        "error": "SteamCMD reported download failure - please retry"
-                    }));
+                    if !will_retry {
+                        eprintln!("[SteamCMD Parser] Mod {} detected as failed (no retry)", mod_id);
+                        let _ = app_handle.emit("mod-state", serde_json::json!({
+                            "modId": mod_id,
+                            "state": "failed",
+                            "error": "SteamCMD reported download failure"
+                        }));
+                    } else {
+                        eprintln!("[SteamCMD Parser] Mod {} detected as failed (will retry, not emitting failed state)", mod_id);
+                        // Don't emit "failed" - retry logic will emit "retry-queued"
+                    }
                 }
                 continue; // Don't process other states for failed mods
             }
@@ -823,31 +1158,6 @@ impl Downloader {
                     let _ = app_handle.emit("mod-state", serde_json::json!({
                         "modId": mod_id,
                         "state": "downloading"
-                    }));
-                }
-            }
-            
-            // Detect download complete - ONLY when SteamCMD explicitly says "Success. Downloaded item"
-            // Must contain both "success" and "downloaded" to avoid false positives
-            // Also check that this mod wasn't already marked as failed
-            let is_failed = if let Some(tracker) = failed_mods_tracker {
-                let failed = tracker.lock().unwrap();
-                failed.contains(mod_id)
-            } else {
-                false
-            };
-            
-            if !is_failed &&
-               line_lower.contains("success") && 
-               line_lower.contains("downloaded") &&
-               line_lower.contains("item") &&
-               line_lower.contains(mod_id) &&
-               !line_lower.contains("failed") {
-                if let Some(app_handle) = app {
-                    eprintln!("[SteamCMD Parser] Mod {} detected as download-complete", mod_id);
-                    let _ = app_handle.emit("mod-state", serde_json::json!({
-                        "modId": mod_id,
-                        "state": "download-complete"
                     }));
                 }
             }

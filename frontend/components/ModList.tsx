@@ -30,8 +30,6 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
   const { 
     mods: contextMods, 
     error, 
-    updatingMods,
-    downloadedMods,
     modStates,
     modErrors,
     ignoreFromList, 
@@ -483,21 +481,29 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
           >
             {({ index, style }) => {
               const mod = mods[index];
-              const isUpdating = updatingMods.has(mod.modId);
               const modState = modStates?.get(mod.modId) || null;
-              const isDownloaded = downloadedMods?.has(mod.modId) || false;
               const modError = modErrors?.get(mod.modId);
               
+              // isUpdating is computed from modState - if mod has an active state, it's updating
+              // Only show as updating if mod has an active state (not null, not "completed", not "failed")
+              const isUpdating = modState !== null && modState !== "completed" && modState !== "failed";
+              
               // Determine status text based on mod state
+              // Only show status text if mod is actually updating (has an active state)
               const getStatusText = () => {
+                // If mod is not updating, don't show any status text
+                if (!isUpdating || modState === null) return "";
+                
                 if (modState === "queued") return "In queue...";
+                if (modState === "retry-queued") return "Retrying download...";
                 if (modState === "downloading") return "Downloading...";
-                if (modState === "download-complete") return "Download complete, installing...";
                 if (modState === "installing") return "Installing...";
+                if (modState === "completed") return "Completed";
                 if (modState === "failed") return modError || "Download failed - please retry";
-                // Fallback for backward compatibility
-                if (isDownloaded) return "Installing...";
-                return "Downloading...";
+                
+                // Fallback for unknown states - should not happen
+                console.warn(`[ModList] Unknown mod state for ${mod.modId}: ${modState}`);
+                return "";
               };
               
               return (

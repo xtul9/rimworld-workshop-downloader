@@ -44,11 +44,12 @@ pub async fn update_mods(
         .collect();
     
     // Download mods with size information for load balancing
+    // This now returns a channel that yields mods as they are downloaded
     let downloader = get_downloader();
-    let (downloaded_mods, download_path, failed_download_mod_ids) = {
+    let (mut mod_receiver, download_path) = {
         let mut dl = downloader.lock().await;
         let download_path = dl.download_path().clone();
-        let downloaded_mods_result = if mod_sizes.is_empty() {
+        let mod_receiver_result = if mod_sizes.is_empty() {
             // No size information available, use simple download
             dl.download_mods(&mod_ids, Some(&app)).await
         } else {
@@ -56,21 +57,8 @@ pub async fn update_mods(
             dl.download_mods_with_sizes(&mod_ids, Some(&mod_sizes), Some(&app)).await
         };
         
-        match downloaded_mods_result {
-            Ok(downloaded_mods) => {
-                // Find which mods failed to download
-                let downloaded_mod_ids: std::collections::HashSet<String> = downloaded_mods
-                    .iter()
-                    .map(|m| m.mod_id.clone())
-                    .collect();
-                let failed_mod_ids: Vec<String> = mod_ids
-                    .iter()
-                    .filter(|id| !downloaded_mod_ids.contains(*id))
-                    .cloned()
-                    .collect();
-                
-                (downloaded_mods, download_path, failed_mod_ids)
-            }
+        match mod_receiver_result {
+            Ok(mod_receiver) => (mod_receiver, download_path),
             Err(e) => {
                 // If download completely failed, return error
                 return Err(format!("Failed to download mods: {}", e));
@@ -78,74 +66,68 @@ pub async fn update_mods(
         }
     };
     
-    // Handle mods that failed to download
-    for failed_mod_id in &failed_download_mod_ids {
-        eprintln!("[UPDATE_MODS] Mod {} failed to download", failed_mod_id);
-        
-        // Emit mod-updated event with failure
-        let _ = app.emit("mod-updated", serde_json::json!({
-            "modId": failed_mod_id,
-            "success": false,
-            "error": "Download failed - SteamCMD reported failure"
-        }));
-    }
-    
-    // If all mods failed, return error
-    if downloaded_mods.is_empty() && !failed_download_mod_ids.is_empty() {
-        return Err(format!("All mod downloads failed. Failed mods: {}", failed_download_mod_ids.join(", ")));
-    }
-    
     // Create HashMap for O(1) lookup instead of O(n) find()
-    let mods_map: HashMap<String, &BaseMod> = steam_mods.iter()
-        .map(|m| (m.mod_id.clone(), m))
+    // Clone the mods data so we can move it into spawned tasks
+    let mods_map: HashMap<String, BaseMod> = steam_mods.iter()
+        .map(|m| (m.mod_id.clone(), m.clone()))
         .collect();
     
-    // Update mods in parallel (different mods can be updated simultaneously)
-    let mut update_futures = Vec::new();
+    // Track which mods we've seen (for detecting failures)
+    let mut seen_mod_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut update_handles = Vec::new();
     
-    for downloaded_mod in downloaded_mods {
-        let mod_id = downloaded_mod.mod_id.clone();
-        let mod_path = downloaded_mod.mod_path.clone();
-        let original_mod = mods_map.get(&mod_id)
-            .ok_or_else(|| format!("Original mod not found for {}", mod_id))?;
-        
-        let existing_folder_name = original_mod.folder.as_deref();
-        let mod_title = original_mod.details.as_ref().map(|d| d.title.clone());
-        let remote_update_time = original_mod.details.as_ref()
-            .map(|d| d.time_updated)
-            .unwrap_or_else(|| {
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs() as i64
-            });
-        
-        let download_path_clone = download_path.clone();
-        let mods_path_clone = mods_path.clone();
-        let backup_dir_clone = backup_directory.as_ref().map(|s| PathBuf::from(s));
-        let app_clone = app.clone();
-        
-        // Spawn update task for each mod
-        let future = async move {
-            eprintln!("[UPDATE_MODS] Processing downloaded mod: {} at {:?}", mod_id, mod_path);
-            
-            // Emit installing event before copying
-            let _ = app_clone.emit("mod-state", serde_json::json!({
-                "modId": mod_id,
-                "state": "installing"
-            }));
-            
-            let updater = ModUpdater;
-            let mod_path_result = updater.update_mod(
-                &mod_id,
-                &mod_path,
-                &download_path_clone,
-                &mods_path_clone,
-                existing_folder_name,
-                backup_mods,
-                backup_dir_clone.as_deref(),
-                mod_title.as_deref(),
-            ).await;
+    // Process mods as they arrive from the channel
+    // This allows installation to start immediately after each mod is downloaded,
+    // without waiting for all downloads to complete
+    while let Some(result) = mod_receiver.recv().await {
+        match result {
+            Ok(downloaded_mod) => {
+                // Mark this mod as seen
+                seen_mod_ids.insert(downloaded_mod.mod_id.clone());
+                
+                // Emit installing state immediately
+                let _ = app.emit("mod-state", serde_json::json!({
+                    "modId": downloaded_mod.mod_id,
+                    "state": "installing"
+                }));
+                
+                let mod_id = downloaded_mod.mod_id.clone();
+                let mod_path = downloaded_mod.mod_path.clone();
+                let original_mod = mods_map.get(&mod_id)
+                    .ok_or_else(|| format!("Original mod not found for {}", mod_id))?;
+                
+                let existing_folder_name = original_mod.folder.clone();
+                let mod_title = original_mod.details.as_ref().map(|d| d.title.clone());
+                let remote_update_time = original_mod.details.as_ref()
+                    .map(|d| d.time_updated)
+                    .unwrap_or_else(|| {
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs() as i64
+                    });
+                
+                let download_path_clone = download_path.clone();
+                let mods_path_clone = mods_path.clone();
+                let backup_dir_clone = backup_directory.as_ref().map(|s| PathBuf::from(s));
+                let app_clone = app.clone();
+                
+                // Spawn independent task for each mod installation
+                // This ensures events are emitted immediately when each mod completes
+                let handle = tokio::spawn(async move {
+                    eprintln!("[UPDATE_MODS] Processing downloaded mod: {} at {:?}", mod_id, mod_path);
+                                
+                    let updater = ModUpdater;
+                    let mod_path_result = updater.update_mod(
+                        &mod_id,
+                        &mod_path,
+                        &download_path_clone,
+                        &mods_path_clone,
+                        existing_folder_name.as_deref(),
+                        backup_mods,
+                        backup_dir_clone.as_deref(),
+                        mod_title.as_deref(),
+                    ).await;
             
             match mod_path_result {
                 Ok(updated_path) => {
@@ -165,7 +147,14 @@ pub async fn update_mods(
                     // Wait for all .lastupdated files to be written
                     futures::future::join_all(update_file_futures).await;
                     
-                    // Emit event for successfully updated mod
+                    // Emit "completed" state event IMMEDIATELY
+                    // This marks the mod as completed in the UI
+                    let _ = app_clone.emit("mod-state", serde_json::json!({
+                        "modId": mod_id,
+                        "state": "completed",
+                    }));
+                    
+                    // Emit mod-updated event for backward compatibility and final status
                     let _ = app_clone.emit("mod-updated", serde_json::json!({
                         "modId": mod_id,
                         "success": true,
@@ -176,7 +165,7 @@ pub async fn update_mods(
                 Err(e) => {
                     eprintln!("[UPDATE_MODS] Error updating mod {}: {}", mod_id, e);
                     
-                    // Emit event for failed mod update
+                    // Emit event for failed mod update IMMEDIATELY
                     let _ = app_clone.emit("mod-updated", serde_json::json!({
                         "modId": mod_id,
                         "success": false,
@@ -186,13 +175,51 @@ pub async fn update_mods(
                     (mod_id, Err(e))
                 }
             }
-        };
+        });
         
-        update_futures.push(future);
+        update_handles.push(handle);
+            }
+            Err(error_msg) => {
+                // Handle download failure - extract mod ID from error message if possible
+                eprintln!("[UPDATE_MODS] Download channel reported error: {}", error_msg);
+                // Don't emit mod-updated here - let the retry system handle state transitions
+                // The retry system will emit "retry-queued" or "failed" as appropriate
+                // We just log the error here
+            }
+        }
+    }
+    
+    // Find mods that failed to download (mods that were requested but never seen)
+    let failed_download_mod_ids: Vec<String> = mod_ids
+        .iter()
+        .filter(|id| !seen_mod_ids.contains(*id))
+        .cloned()
+        .collect();
+    
+    // Handle mods that failed to download
+    for failed_mod_id in &failed_download_mod_ids {
+        eprintln!("[UPDATE_MODS] Mod {} failed to download", failed_mod_id);
+        
+        // Emit mod-updated event with failure
+        let _ = app.emit("mod-updated", serde_json::json!({
+            "modId": failed_mod_id,
+            "success": false,
+            "error": "Download failed - SteamCMD reported failure"
+        }));
     }
     
     // Wait for all updates to complete
-    let results = futures::future::join_all(update_futures).await;
+    // Note: Each task emits events independently, so frontend receives them immediately
+    let results: Vec<_> = futures::future::join_all(update_handles).await
+        .into_iter()
+        .map(|result| {
+            // Handle task join errors
+            result.unwrap_or_else(|e| {
+                eprintln!("[UPDATE_MODS] Task panicked: {:?}", e);
+                ("".to_string(), Err(format!("Task panicked: {:?}", e)))
+            })
+        })
+        .collect();
     let mut updated_mods = Vec::new();
     
     for (mod_id, result) in results {
@@ -200,7 +227,7 @@ pub async fn update_mods(
             Ok(_path) => {
                 // Find the original mod to return
                 if let Some(original_mod) = mods_map.get(&mod_id) {
-                    let mut updated_mod = (*original_mod).clone();
+                    let mut updated_mod = original_mod.clone();
                     updated_mod.updated = Some(true);
                     updated_mods.push(updated_mod);
                 }
@@ -209,7 +236,7 @@ pub async fn update_mods(
                 eprintln!("[UPDATE_MODS] Failed to update mod {}: {}", mod_id, e);
                 // Still add the mod but mark as not updated
                 if let Some(original_mod) = mods_map.get(&mod_id) {
-                    let mut failed_mod = (*original_mod).clone();
+                    let mut failed_mod = original_mod.clone();
                     failed_mod.updated = Some(false);
                     updated_mods.push(failed_mod);
                 }
