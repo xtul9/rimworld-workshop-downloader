@@ -109,14 +109,12 @@
 }
 
 .mod-item {
-  padding: 12px;
-  margin: 0;
+  padding: 8px 0 8px 8px;
   background-color: #f8f9fa;
-  border: 2px solid transparent;
+  border: 1px solid transparent;
   border-radius: 4px;
   cursor: pointer;
   transition: all 0.2s;
-  min-height: 72px;
   display: flex;
   flex-direction: row;
   align-items: stretch;
@@ -173,7 +171,7 @@
 
 .mod-item.non-steam-mod {
   background-color: #f5f5f5;
-  border: none;
+  border: 1px solid transparent;
 }
 
 .mod-item.non-steam-mod:hover {
@@ -464,7 +462,7 @@
 
 .dark .mod-item.non-steam-mod {
     background-color: #2a2a2a;
-    border: none;
+    border: 1px solid transparent;
   }
 
 .dark .mod-item.non-steam-mod:hover {

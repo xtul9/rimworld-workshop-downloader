@@ -477,8 +477,6 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
             itemCount={mods.length}
             itemSize={ITEM_HEIGHT}
             width="100%"
-            style={{ paddingTop: "10px" }}
-            innerElementType="div"
           >
             {({ index, style }) => {
               const mod = mods[index];
@@ -513,8 +511,7 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
                 <div
                   style={{
                     ...style,
-                    height: `${parseInt(style.height as string) - 8}px`,
-                    marginBottom: "8px",
+                    height: `${parseInt(style.height as string) - 4}px`,
                   }}
                   className={`mod-item ${selectedMods.has(mod.modId) ? "selected" : ""} ${mod.updated ? "updated" : ""} ${isUpdating ? "updating" : ""} ${!mod.details ? "no-details" : ""} ${mod.nonSteamMod ? "non-steam-mod" : ""} ${modState ? `mod-state-${modState}` : ""}`}
                   onClick={(e) => !isUpdating && handleSelectMod(mod.modId, e.ctrlKey || e.metaKey, e.shiftKey, index)}
