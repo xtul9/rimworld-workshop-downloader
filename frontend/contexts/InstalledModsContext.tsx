@@ -203,19 +203,29 @@ export function InstalledModsProvider({ children }: { children: ReactNode }) {
             return newMap;
           });
           
-          // Check if this mod is already in the list
-          // If not, it's a newly downloaded mod and we should refresh the list
+          // Update the mod in the list if it exists, otherwise refresh the entire list
           setMods(prevMods => {
-            const modExists = prevMods.some(m => m.modId === modId);
-            if (!modExists && settings.modsPath) {
-              // This is a newly downloaded mod - refresh the list to include it
-              console.log(`[INSTALLED_MODS] Mod ${modId} not found in list, refreshing...`);
-              // Reload installed mods asynchronously
-              loadInstalledMods(settings.modsPath).catch(err => {
-                console.error(`[INSTALLED_MODS] Failed to refresh mods list after download:`, err);
-              });
+            const modIndex = prevMods.findIndex(m => m.modId === modId);
+            if (modIndex !== -1) {
+              // Mod exists in list - update it to reflect changes (e.g., nonSteamMod flag)
+              // After update from Steam, mod should no longer be marked as non-steam
+              const updatedMods = [...prevMods];
+              updatedMods[modIndex] = {
+                ...updatedMods[modIndex],
+                nonSteamMod: false, // After Steam update, PublishedFileId.txt exists
+              };
+              console.log(`[INSTALLED_MODS] Updated mod ${modId} in list (nonSteamMod -> false)`);
+              return updatedMods;
+            } else {
+              // Mod doesn't exist in list - it's a newly downloaded mod, refresh the list
+              if (settings.modsPath) {
+                console.log(`[INSTALLED_MODS] Mod ${modId} not found in list, refreshing...`);
+                loadInstalledMods(settings.modsPath).catch(err => {
+                  console.error(`[INSTALLED_MODS] Failed to refresh mods list after download:`, err);
+                });
+              }
+              return prevMods;
             }
-            return prevMods;
           });
         } else {
           // Handle error - but only if not in retry-queued state
@@ -239,7 +249,7 @@ export function InstalledModsProvider({ children }: { children: ReactNode }) {
       unlistenState?.();
       unlistenUpdated?.();
     };
-  }, []);
+  }, [settings.modsPath]);
 
   const updateMods = async (modsToUpdate: BaseMod[]) => {
     if (modsToUpdate.length === 0) return;
