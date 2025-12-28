@@ -142,6 +142,10 @@ impl ModUpdater {
         copy_dir_all_async(&source_path, &mod_destination_path).await
             .map_err(|e| format!("Failed to copy mod: {}", e))?;
 
+        // Ensure PublishedFileId.txt exists after copying
+        Self::ensure_published_file_id(&mod_destination_path, mod_id).await
+            .map_err(|e| format!("Failed to create PublishedFileId.txt: {}", e))?;
+
         eprintln!("[ModUpdater] Mod {} copied successfully to {:?}", mod_id, mod_destination_path);
 
         Ok(mod_destination_path)
@@ -166,6 +170,55 @@ impl ModUpdater {
         }
         
         Ok(None)
+    }
+
+    /// Ensure PublishedFileId.txt exists in the mod's About folder
+    /// Creates the file if it doesn't exist
+    async fn ensure_published_file_id(mod_path: &Path, mod_id: &str) -> Result<(), String> {
+        let about_path = mod_path.join("About");
+        
+        // Check if About folder exists, if not, create it
+        if !about_path.exists() {
+            fs::create_dir_all(&about_path)
+                .map_err(|e| format!("Failed to create About directory: {}", e))?;
+            eprintln!("[ModUpdater] Created About directory at {:?}", about_path);
+        }
+        
+        let file_id_path = about_path.join("PublishedFileId.txt");
+        
+        // Check if PublishedFileId.txt already exists
+        if file_id_path.exists() {
+            // Verify it contains the correct mod ID
+            match fs::read_to_string(&file_id_path) {
+                Ok(content) => {
+                    let existing_id = content.trim();
+                    if existing_id == mod_id {
+                        // File exists and has correct ID, nothing to do
+                        return Ok(());
+                    } else {
+                        eprintln!("[ModUpdater] PublishedFileId.txt exists but has different ID ({} vs {}), updating it", existing_id, mod_id);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[ModUpdater] Failed to read existing PublishedFileId.txt: {}, will recreate it", e);
+                }
+            }
+        }
+        
+        // Create or update PublishedFileId.txt
+        tokio::task::spawn_blocking({
+            let file_id_path = file_id_path.clone();
+            let mod_id = mod_id.to_string();
+            move || {
+                fs::write(&file_id_path, mod_id)
+                    .map_err(|e| format!("Failed to write PublishedFileId.txt: {}", e))
+            }
+        }).await
+        .map_err(|e| format!("Task panicked: {:?}", e))?
+        .map_err(|e| e)?;
+        
+        eprintln!("[ModUpdater] Created/updated PublishedFileId.txt at {:?} with ID {}", file_id_path, mod_id);
+        Ok(())
     }
 }
 
