@@ -45,22 +45,54 @@ pub async fn update_mods(
     
     // Download mods with size information for load balancing
     let downloader = get_downloader();
-    let (downloaded_mods, download_path) = {
+    let (downloaded_mods, download_path, failed_download_mod_ids) = {
         let mut dl = downloader.lock().await;
         let download_path = dl.download_path().clone();
-        let downloaded_mods = if mod_sizes.is_empty() {
+        let downloaded_mods_result = if mod_sizes.is_empty() {
             // No size information available, use simple download
             dl.download_mods(&mod_ids, Some(&app)).await
         } else {
             // Use size-based load balancing
             dl.download_mods_with_sizes(&mod_ids, Some(&mod_sizes), Some(&app)).await
+        };
+        
+        match downloaded_mods_result {
+            Ok(downloaded_mods) => {
+                // Find which mods failed to download
+                let downloaded_mod_ids: std::collections::HashSet<String> = downloaded_mods
+                    .iter()
+                    .map(|m| m.mod_id.clone())
+                    .collect();
+                let failed_mod_ids: Vec<String> = mod_ids
+                    .iter()
+                    .filter(|id| !downloaded_mod_ids.contains(*id))
+                    .cloned()
+                    .collect();
+                
+                (downloaded_mods, download_path, failed_mod_ids)
+            }
+            Err(e) => {
+                // If download completely failed, return error
+                return Err(format!("Failed to download mods: {}", e));
+            }
         }
-        .map_err(|e| format!("Failed to download mods: {}", e))?;
-        (downloaded_mods, download_path)
     };
     
-    if downloaded_mods.is_empty() {
-        return Err("Failed to download any mods. Check SteamCMD logs for details.".to_string());
+    // Handle mods that failed to download
+    for failed_mod_id in &failed_download_mod_ids {
+        eprintln!("[UPDATE_MODS] Mod {} failed to download", failed_mod_id);
+        
+        // Emit mod-updated event with failure
+        let _ = app.emit("mod-updated", serde_json::json!({
+            "modId": failed_mod_id,
+            "success": false,
+            "error": "Download failed - SteamCMD reported failure"
+        }));
+    }
+    
+    // If all mods failed, return error
+    if downloaded_mods.is_empty() && !failed_download_mod_ids.is_empty() {
+        return Err(format!("All mod downloads failed. Failed mods: {}", failed_download_mod_ids.join(", ")));
     }
     
     // Create HashMap for O(1) lookup instead of O(n) find()
@@ -96,6 +128,12 @@ pub async fn update_mods(
         // Spawn update task for each mod
         let future = async move {
             eprintln!("[UPDATE_MODS] Processing downloaded mod: {} at {:?}", mod_id, mod_path);
+            
+            // Emit installing event before copying
+            let _ = app_clone.emit("mod-state", serde_json::json!({
+                "modId": mod_id,
+                "state": "installing"
+            }));
             
             let updater = ModUpdater;
             let mod_path_result = updater.update_mod(
@@ -176,6 +214,15 @@ pub async fn update_mods(
                     updated_mods.push(failed_mod);
                 }
             }
+        }
+    }
+    
+    // Add mods that failed to download to the result
+    for failed_mod_id in &failed_download_mod_ids {
+        if let Some(original_mod) = mods_map.get(failed_mod_id) {
+            let mut failed_mod = (*original_mod).clone();
+            failed_mod.updated = Some(false);
+            updated_mods.push(failed_mod);
         }
     }
     

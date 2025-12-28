@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { BaseMod } from "../types";
 import { useSettings } from "./SettingsContext";
+import { ModState } from "./ModsContext";
 
 interface InstalledModsContextType {
   mods: BaseMod[];
@@ -13,6 +14,8 @@ interface InstalledModsContextType {
   error: string | null;
   updatingMods: Set<string>;
   downloadedMods: Set<string>;
+  modStates: Map<string, ModState>;
+  modErrors: Map<string, string>;
   hasLoaded: boolean;
   loadInstalledMods: (modsPath: string) => Promise<void>;
   updateMods: (modsToUpdate: BaseMod[]) => Promise<void>;
@@ -32,6 +35,8 @@ export function InstalledModsProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState<string | null>(null);
   const [updatingMods, setUpdatingMods] = useState<Set<string>>(new Set());
   const [downloadedMods, setDownloadedMods] = useState<Set<string>>(new Set());
+  const [modStates, setModStates] = useState<Map<string, ModState>>(new Map());
+  const [modErrors, setModErrors] = useState<Map<string, string>>(new Map());
   const [hasLoaded, setHasLoaded] = useState(false);
   const { updateSetting, settings } = useSettings();
 
@@ -92,11 +97,65 @@ export function InstalledModsProvider({ children }: { children: ReactNode }) {
 
   // Listen for real-time download and update events
   useEffect(() => {
+    let unlistenState: (() => void) | undefined;
     let unlistenDownloaded: (() => void) | undefined;
     let unlistenUpdated: (() => void) | undefined;
 
     const setupListeners = async () => {
-      // Listen for mod-downloaded events
+      // Listen for mod-state events (queued, downloading, installing, etc.)
+      unlistenState = await listen<{ modId: string; state: string }>("mod-state", (event) => {
+        const { modId, state } = event.payload;
+        console.log(`[EVENT] Mod state changed: ${modId} -> ${state}`);
+        
+        setModStates(prev => {
+          const newMap = new Map(prev);
+          if (state === "queued" || state === "downloading" || state === "download-complete" || state === "installing" || state === "failed") {
+            newMap.set(modId, state as ModState);
+            // Add to updatingMods when state changes to any active state (except failed)
+            if (state !== "failed") {
+              setUpdatingMods(prevSet => {
+                const newSet = new Set(prevSet);
+                newSet.add(modId);
+                return newSet;
+              });
+            } else {
+              // Remove from updatingMods when failed
+              setUpdatingMods(prevSet => {
+                const newSet = new Set(prevSet);
+                newSet.delete(modId);
+                return newSet;
+              });
+            }
+          } else {
+            newMap.delete(modId);
+          }
+          return newMap;
+        });
+        
+        // Handle download-complete state
+        if (state === "download-complete") {
+          setDownloadedMods(prev => new Set([...prev, modId]));
+        }
+        
+        // Handle failed state - store error message for this specific mod
+        if (state === "failed") {
+          const errorMessage = (event.payload as any).error || "Download failed";
+          setModErrors(prev => {
+            const newMap = new Map(prev);
+            newMap.set(modId, errorMessage);
+            return newMap;
+          });
+        } else {
+          // Clear error when mod state changes to non-failed
+          setModErrors(prev => {
+            const newMap = new Map(prev);
+            newMap.delete(modId);
+            return newMap;
+          });
+        }
+      });
+
+      // Listen for mod-downloaded events (backward compatibility)
       unlistenDownloaded = await listen<{ modId: string }>("mod-downloaded", (event) => {
         const modId = event.payload.modId;
         console.log(`[EVENT] Mod downloaded: ${modId}`);
@@ -108,34 +167,60 @@ export function InstalledModsProvider({ children }: { children: ReactNode }) {
         const { modId, success, error } = event.payload;
         console.log(`[EVENT] Mod updated: ${modId}, success: ${success}`);
         
-        if (success) {
-          // In Installed Mods tab, mods should stay in the list after update
-          // Just remove from updating set to stop showing progress
-          setUpdatingMods(prev => {
-            const newSet = new Set(prev);
-            newSet.delete(modId);
-            return newSet;
-          });
-          setDownloadedMods(prev => {
-            const newSet = new Set(prev);
-            newSet.delete(modId);
-            return newSet;
-          });
-        } else {
-          // Handle error
-          console.error(`[EVENT] Mod update failed: ${modId}, error: ${error}`);
-          setUpdatingMods(prev => {
-            const newSet = new Set(prev);
-            newSet.delete(modId);
-            return newSet;
-          });
-        }
+        // Clear mod state when update completes
+        setModStates(prev => {
+          const newMap = new Map(prev);
+          newMap.delete(modId);
+          return newMap;
+        });
+        
+                if (success) {
+                  // In Installed Mods tab, mods should stay in the list after update
+                  // Just remove from updating set to stop showing progress
+                  setUpdatingMods(prev => {
+                    const newSet = new Set(prev);
+                    newSet.delete(modId);
+                    return newSet;
+                  });
+                  setDownloadedMods(prev => {
+                    const newSet = new Set(prev);
+                    newSet.delete(modId);
+                    return newSet;
+                  });
+                  // Clear any errors
+                  setModErrors(prev => {
+                    const newMap = new Map(prev);
+                    newMap.delete(modId);
+                    return newMap;
+                  });
+                } else {
+                  // Handle error
+                  console.error(`[EVENT] Mod update failed: ${modId}, error: ${error}`);
+                  setUpdatingMods(prev => {
+                    const newSet = new Set(prev);
+                    newSet.delete(modId);
+                    return newSet;
+                  });
+                  // Store error for this mod
+                  setModErrors(prev => {
+                    const newMap = new Map(prev);
+                    newMap.set(modId, error || "Update failed");
+                    return newMap;
+                  });
+                  // Set mod state to failed
+                  setModStates(prev => {
+                    const newMap = new Map(prev);
+                    newMap.set(modId, "failed");
+                    return newMap;
+                  });
+                }
       });
     };
 
     setupListeners().catch(console.error);
 
     return () => {
+      unlistenState?.();
       unlistenDownloaded?.();
       unlistenUpdated?.();
     };
@@ -250,6 +335,8 @@ export function InstalledModsProvider({ children }: { children: ReactNode }) {
         error,
         updatingMods,
         downloadedMods,
+        modStates,
+        modErrors,
         hasLoaded,
         loadInstalledMods,
         updateMods,

@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 use serde_json;
-use tauri::command;
+use tauri::{command, AppHandle, Emitter};
 use crate::core::mod_manager::ModUpdater;
 use crate::core::mod_scanner::query_mod_batch;
 use crate::services::{get_downloader, get_steam_api, write_last_updated_file};
@@ -10,6 +10,7 @@ use crate::services::{get_downloader, get_steam_api, write_last_updated_file};
 /// Download mod(s) from Steam Workshop
 #[command]
 pub async fn download_mod(
+    app: AppHandle,
     mod_id: String,
     _title: Option<String>,
     mods_path: String,
@@ -34,7 +35,7 @@ pub async fn download_mod(
     let mod_id_for_download = mod_id.clone();
     let downloader_for_download = get_downloader();
     let mut dl_guard = downloader_for_download.lock().await;
-    let downloaded_mods_result = dl_guard.download_mods(&[mod_id_for_download], None).await;
+    let downloaded_mods_result = dl_guard.download_mods(&[mod_id_for_download], Some(&app)).await;
     drop(dl_guard); // Release lock before await
     
     let downloaded_mods = match downloaded_mods_result {
@@ -57,6 +58,12 @@ pub async fn download_mod(
     }
     
     let downloaded_mod = &downloaded_mods[0];
+    
+    // Emit installing event before copying
+    let _ = app.emit("mod-state", serde_json::json!({
+        "modId": mod_id,
+        "state": "installing"
+    }));
     
     // Copy mod to mods folder
     let updater = ModUpdater;

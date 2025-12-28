@@ -334,6 +334,16 @@ impl Downloader {
             "login anonymous".to_string(),
         ];
         
+        // Emit queued events for all mods as they are added to the script
+        if let Some(app_handle) = &app {
+            for mod_id in &mod_ids {
+                let _ = app_handle.emit("mod-state", serde_json::json!({
+                    "modId": mod_id,
+                    "state": "queued"
+                }));
+            }
+        }
+        
         for mod_id in &mod_ids {
             script_lines.push(format!("workshop_download_item 294100 {}", mod_id));
         }
@@ -371,17 +381,29 @@ impl Downloader {
             .spawn()
             .map_err(|e| format!("Failed to spawn SteamCMD: {}", e))?;
 
-        // Read output in background (simplified - just consume it)
+        // Track failed mods detected from SteamCMD output
+        let failed_mods_tracker: Arc<Mutex<std::collections::HashSet<String>>> = Arc::new(Mutex::new(std::collections::HashSet::new()));
+        let failed_mods_stdout = failed_mods_tracker.clone();
+        let failed_mods_stderr = failed_mods_tracker.clone();
+        
+        // Parse SteamCMD output to detect mod states
         let stdout = steamcmd_process.stdout.take();
         let stderr = steamcmd_process.stderr.take();
+        
+        // Clone for each task
+        let mod_ids_stdout = mod_ids.clone();
+        let mod_ids_stderr = mod_ids.clone();
+        let app_stdout = app.clone();
+        let app_stderr = app.clone();
         
         let _stdout_task = if let Some(stdout) = stdout {
             tokio::spawn(async move {
                 use tokio::io::{AsyncBufReadExt, BufReader};
                 let reader = BufReader::new(stdout);
                 let mut lines = reader.lines();
-                while let Ok(Some(_line)) = lines.next_line().await {
-                    // Output is logged but not critical for batch operations
+                while let Ok(Some(line)) = lines.next_line().await {
+                    // Parse SteamCMD output to detect mod states
+                    Self::parse_steamcmd_output(&line, &mod_ids_stdout, app_stdout.as_ref(), Some(&failed_mods_stdout));
                 }
             })
         } else {
@@ -393,8 +415,9 @@ impl Downloader {
                 use tokio::io::{AsyncBufReadExt, BufReader};
                 let reader = BufReader::new(stderr);
                 let mut lines = reader.lines();
-                while let Ok(Some(_line)) = lines.next_line().await {
-                    // Output is logged but not critical for batch operations
+                while let Ok(Some(line)) = lines.next_line().await {
+                    // Parse SteamCMD output to detect mod states
+                    Self::parse_steamcmd_output(&line, &mod_ids_stderr, app_stderr.as_ref(), Some(&failed_mods_stderr));
                 }
             })
         } else {
@@ -444,8 +467,22 @@ impl Downloader {
         let mut downloaded_mods = Vec::new();
         let mut failed_mods = Vec::new();
         
+        // Get list of mods that failed according to SteamCMD output
+        let steamcmd_failed_mods: std::collections::HashSet<String> = {
+            let failed = failed_mods_tracker.lock().unwrap();
+            failed.clone()
+        };
+        
         for (idx, result) in download_results.into_iter().enumerate() {
             let mod_id = &mod_ids[idx];
+            
+            // Skip mods that SteamCMD reported as failed
+            if steamcmd_failed_mods.contains(mod_id) {
+                eprintln!("[Downloader] Instance {}: Mod {} failed according to SteamCMD output", batch_idx, mod_id);
+                failed_mods.push(mod_id.clone());
+                continue;
+            }
+            
             match result {
                 Ok(Some(mod_info)) => {
                     // Verify download completeness before adding
@@ -709,8 +746,13 @@ impl Downloader {
             .and_then(|n| n.to_str())
             .map(|s| s.to_string());
         
-        // Emit event for downloaded mod
+        // Emit event for downloaded mod (download complete, ready for installation)
         if let Some(app_handle) = &app {
+            let _ = app_handle.emit("mod-state", serde_json::json!({
+                "modId": mod_id,
+                "state": "download-complete"
+            }));
+            // Keep old event for backward compatibility
             let _ = app_handle.emit("mod-downloaded", serde_json::json!({
                 "modId": mod_id,
             }));
@@ -721,6 +763,95 @@ impl Downloader {
             mod_path: mod_download_path,
             folder,
         }))
+    }
+
+    /// Parse SteamCMD output to detect mod states and emit events
+    fn parse_steamcmd_output(
+        line: &str, 
+        mod_ids: &[String], 
+        app: Option<&AppHandle>,
+        failed_mods_tracker: Option<&Arc<Mutex<std::collections::HashSet<String>>>>,
+    ) {
+        let line_trimmed = line.trim();
+        let line_lower = line_trimmed.to_lowercase();
+        
+        // Log SteamCMD output for debugging (can be removed later if too verbose)
+        if line_trimmed.len() > 0 && !line_lower.contains("steam>") && !line_lower.contains("loading") {
+            eprintln!("[SteamCMD Output] {}", line_trimmed);
+        }
+        
+        // Check each mod ID in the batch
+        for mod_id in mod_ids {
+            // Check if this line mentions the mod ID
+            if !line_lower.contains(mod_id) {
+                continue;
+            }
+            
+            // Detect download errors FIRST - before other states
+            // Pattern: "ERROR! Download item <mod_id> failed (Failure)"
+            if line_lower.contains("error") && 
+               line_lower.contains("download") &&
+               line_lower.contains("failed") &&
+               line_lower.contains(mod_id) {
+                // Track failed mod
+                if let Some(tracker) = failed_mods_tracker {
+                    let mut failed = tracker.lock().unwrap();
+                    failed.insert(mod_id.clone());
+                }
+                
+                if let Some(app_handle) = app {
+                    eprintln!("[SteamCMD Parser] Mod {} detected as failed", mod_id);
+                    let _ = app_handle.emit("mod-state", serde_json::json!({
+                        "modId": mod_id,
+                        "state": "failed",
+                        "error": "SteamCMD reported download failure - please retry"
+                    }));
+                }
+                continue; // Don't process other states for failed mods
+            }
+            
+            // Detect downloading state - when SteamCMD actually starts downloading
+            // Patterns: "Downloading item <mod_id>", "Downloading Workshop item <mod_id>", etc.
+            // But NOT if it's part of "downloaded" or "download failed"
+            if line_lower.contains("downloading") && 
+               !line_lower.contains("downloaded") &&
+               !line_lower.contains("failed") &&
+               (line_lower.contains("item") || line_lower.contains("workshop")) &&
+               line_lower.contains(mod_id) {
+                if let Some(app_handle) = app {
+                    eprintln!("[SteamCMD Parser] Mod {} detected as downloading", mod_id);
+                    let _ = app_handle.emit("mod-state", serde_json::json!({
+                        "modId": mod_id,
+                        "state": "downloading"
+                    }));
+                }
+            }
+            
+            // Detect download complete - ONLY when SteamCMD explicitly says "Success. Downloaded item"
+            // Must contain both "success" and "downloaded" to avoid false positives
+            // Also check that this mod wasn't already marked as failed
+            let is_failed = if let Some(tracker) = failed_mods_tracker {
+                let failed = tracker.lock().unwrap();
+                failed.contains(mod_id)
+            } else {
+                false
+            };
+            
+            if !is_failed &&
+               line_lower.contains("success") && 
+               line_lower.contains("downloaded") &&
+               line_lower.contains("item") &&
+               line_lower.contains(mod_id) &&
+               !line_lower.contains("failed") {
+                if let Some(app_handle) = app {
+                    eprintln!("[SteamCMD Parser] Mod {} detected as download-complete", mod_id);
+                    let _ = app_handle.emit("mod-state", serde_json::json!({
+                        "modId": mod_id,
+                        "state": "download-complete"
+                    }));
+                }
+            }
+        }
     }
 
     /// Check if a mod is currently being downloaded

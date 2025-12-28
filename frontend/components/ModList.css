@@ -237,6 +237,39 @@
   white-space: nowrap;
 }
 
+.mod-error-badge {
+  padding: 2px 8px;
+  background-color: #dc3545;
+  color: white;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.mod-item-error {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  margin: 4px 0;
+  background-color: #fee;
+  border: 1px solid #fcc;
+  border-radius: 4px;
+  color: #c33;
+  font-size: 12px;
+}
+
+.mod-error-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.mod-error-text {
+  flex: 1;
+  word-break: break-word;
+}
+
 .mod-item-details {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
@@ -415,6 +448,17 @@
 .dark .mod-non-steam-badge {
     background-color: #757575;
     color: white;
+  }
+
+.dark .mod-error-badge {
+    background-color: #dc3545;
+    color: white;
+  }
+
+.dark .mod-item-error {
+    background-color: #3d1e1e;
+    border-color: #5c2e2e;
+    color: #ff6b6b;
   }
 
 .dark .mod-updating-text {

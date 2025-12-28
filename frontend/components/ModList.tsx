@@ -32,6 +32,8 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
     error, 
     updatingMods,
     downloadedMods,
+    modStates,
+    modErrors,
     ignoreFromList, 
     ignoreThisUpdate, 
     ignorePermanently 
@@ -482,7 +484,21 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
             {({ index, style }) => {
               const mod = mods[index];
               const isUpdating = updatingMods.has(mod.modId);
+              const modState = modStates?.get(mod.modId) || null;
               const isDownloaded = downloadedMods?.has(mod.modId) || false;
+              const modError = modErrors?.get(mod.modId);
+              
+              // Determine status text based on mod state
+              const getStatusText = () => {
+                if (modState === "queued") return "In queue...";
+                if (modState === "downloading") return "Downloading...";
+                if (modState === "download-complete") return "Download complete, installing...";
+                if (modState === "installing") return "Installing...";
+                if (modState === "failed") return modError || "Download failed - please retry";
+                // Fallback for backward compatibility
+                if (isDownloaded) return "Installing...";
+                return "Downloading...";
+              };
               
               return (
                 <div
@@ -491,7 +507,7 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
                     height: `${parseInt(style.height as string) - 8}px`,
                     marginBottom: "8px",
                   }}
-                  className={`mod-item ${selectedMods.has(mod.modId) ? "selected" : ""} ${mod.updated ? "updated" : ""} ${isUpdating ? "updating" : ""} ${!mod.details ? "no-details" : ""} ${mod.nonSteamMod ? "non-steam-mod" : ""}`}
+                  className={`mod-item ${selectedMods.has(mod.modId) ? "selected" : ""} ${mod.updated ? "updated" : ""} ${isUpdating ? "updating" : ""} ${!mod.details ? "no-details" : ""} ${mod.nonSteamMod ? "non-steam-mod" : ""} ${modState ? `mod-state-${modState}` : ""}`}
                   onClick={(e) => !isUpdating && handleSelectMod(mod.modId, e.ctrlKey || e.metaKey, e.shiftKey, index)}
                   onContextMenu={(e) => !isUpdating && handleContextMenu(e, mod)}
                 >
@@ -499,7 +515,7 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
                     <div className="mod-item-updating">
                       <div className="mod-updating-spinner"></div>
                       <div className="mod-updating-text">
-                        {isDownloaded ? "Installing..." : "Downloading..."}
+                        {getStatusText()}
                       </div>
                       <div className="mod-updating-name">{mod.details?.title || mod.folder || mod.modId}</div>
                     </div>
@@ -527,8 +543,22 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
                             </span>
                           )}
                           {mod.updated && <span className="mod-updated-badge">Updated</span>}
+                          {modState === "failed" && (
+                            <span 
+                              className="mod-error-badge" 
+                              title={modError || "Update failed"}
+                            >
+                              ❌ Failed
+                            </span>
+                          )}
                         </div>
                       </div>
+                      {modError && (
+                        <div className="mod-item-error">
+                          <span className="mod-error-icon">⚠️</span>
+                          <span className="mod-error-text">{modError}</span>
+                        </div>
+                      )}
                       <div className="mod-item-details">
                         <div className="mod-detail">
                           <span className="mod-detail-label">ID:</span>
@@ -563,4 +593,5 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
     </div>
   );
 }
+
 
