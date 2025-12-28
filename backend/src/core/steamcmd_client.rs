@@ -179,11 +179,11 @@ impl Downloader {
     }
 
     /// Download mods using SteamCMD with parallel instances for better performance
-    /// For small batches (<=4 mods), uses single instance. For larger batches, uses up to 4 parallel instances.
+    /// For small batches (<=4 mods), uses single instance. For larger batches, uses up to max_instances parallel instances.
     /// If mod_sizes is provided, mods are balanced by size across instances.
     /// Returns a receiver channel that yields mods as they are downloaded
-    pub async fn download_mods(&mut self, mod_ids: &[String], app: Option<&AppHandle>) -> Result<mpsc::Receiver<Result<DownloadedMod, String>>, String> {
-        self.download_mods_with_sizes(mod_ids, None, app).await
+    pub async fn download_mods(&mut self, mod_ids: &[String], app: Option<&AppHandle>, max_instances: Option<usize>) -> Result<mpsc::Receiver<Result<DownloadedMod, String>>, String> {
+        self.download_mods_with_sizes(mod_ids, None, app, max_instances).await
     }
 
     /// Download mods with optional size information for load balancing
@@ -194,8 +194,11 @@ impl Downloader {
         mod_ids: &[String],
         mod_sizes: Option<&std::collections::HashMap<String, u64>>,
         app: Option<&AppHandle>,
+        max_instances: Option<usize>,
     ) -> Result<mpsc::Receiver<Result<DownloadedMod, String>>, String> {
         const MAX_RETRIES: u32 = 6;
+        const DEFAULT_MAX_INSTANCES: usize = 1;
+        let max_instances = max_instances.unwrap_or(DEFAULT_MAX_INSTANCES);
         let (tx, rx) = mpsc::channel(100); // Buffer up to 100 mods
         
         // Clone necessary data for background task
@@ -205,6 +208,7 @@ impl Downloader {
         let steamcmd_path = self.steamcmd_path.clone();
         let download_path = self.download_path.clone();
         let tx_clone = tx.clone();
+        let max_instances_clone = max_instances;
         
         // Spawn background task to handle downloads
         // This allows the function to return the channel immediately
@@ -258,6 +262,7 @@ impl Downloader {
                 app_clone.as_ref(),
                 mods_to_retry_for_attempt.as_ref(),
                 Some(tx_clone.clone()),
+                max_instances_clone,
             ).await;
             
             match attempt_result {
@@ -373,6 +378,7 @@ impl Downloader {
         app: Option<&AppHandle>,
         mods_to_retry: Option<&std::collections::HashSet<String>>,
         _tx: Option<mpsc::Sender<Result<DownloadedMod, String>>>,
+        max_instances: usize,
     ) -> Result<(Vec<DownloadedMod>, Vec<String>), String> {
         // Convert mods_to_retry to owned Option for passing to download_mods_batch
         let mods_to_retry_owned = mods_to_retry.map(|set| set.clone());
@@ -391,11 +397,9 @@ impl Downloader {
         fs::create_dir_all(download_path)
             .map_err(|e| format!("Failed to create download directory: {}", e))?;
 
-        const MAX_PARALLEL_INSTANCES: usize = 4; // Hard limit - never exceed this
-
-        // Calculate number of instances: use as many as possible (up to MAX_PARALLEL_INSTANCES)
+        // Calculate number of instances: use as many as possible (up to max_instances)
         // For 3+ mods, always use parallel instances to maximize throughput
-        let num_instances = std::cmp::min(mod_ids.len(), MAX_PARALLEL_INSTANCES);
+        let num_instances = std::cmp::min(mod_ids.len(), max_instances);
         
         // Balance mods across instances by size if sizes are available
         let batches = if let Some(sizes) = mod_sizes {

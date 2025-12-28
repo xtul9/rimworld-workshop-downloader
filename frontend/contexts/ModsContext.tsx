@@ -237,7 +237,8 @@ export function ModsProvider({ children }: { children: ReactNode }) {
       const updated = await invoke<BaseMod[]>("update_mods", {
         mods: modsToUpdate,
         backupMods: settings.backupMods || false,
-        backupDirectory: settings.backupDirectory || undefined
+        backupDirectory: settings.backupDirectory || undefined,
+        maxSteamcmdInstances: settings.maxSteamcmdInstances || 1
       });
       
       console.log(`[UPDATE] Received ${updated.length} updated mod(s) from Rust backend`);

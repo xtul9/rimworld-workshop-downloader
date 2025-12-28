@@ -98,6 +98,7 @@ const defaultSettings: AppSettings = {
   theme: "system",
   isFirstRun: true,
   ignoredMods: [],
+  maxSteamcmdInstances: 1,
 };
 
 export function useSettings() {

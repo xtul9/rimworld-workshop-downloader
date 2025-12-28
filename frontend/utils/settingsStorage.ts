@@ -19,6 +19,7 @@ export interface AppSettings {
   ignoredMods: IgnoredMod[]; // Array of mod IDs and titles that should be permanently ignored
   installedModsSortBy?: "date" | "name"; // Sort preference for installed mods tab
   installedModsSortOrder?: "desc" | "asc"; // Sort order preference for installed mods tab
+  maxSteamcmdInstances?: number; // Maximum number of parallel SteamCMD instances (default: 4)
   // Add more settings here in the future
   [key: string]: any;
 }
@@ -32,6 +33,7 @@ const defaultSettings: AppSettings = {
   ignoredMods: [],
   installedModsSortBy: "date",
   installedModsSortOrder: "desc",
+  maxSteamcmdInstances: 1,
 };
 
 // Initialize store instance

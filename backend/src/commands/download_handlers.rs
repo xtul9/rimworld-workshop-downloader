@@ -14,6 +14,7 @@ pub async fn download_mod(
     mod_id: String,
     _title: Option<String>,
     mods_path: String,
+    max_steamcmd_instances: Option<usize>,
 ) -> Result<serde_json::Value, String> {
     // Check if mod is already downloading
     {
@@ -35,7 +36,7 @@ pub async fn download_mod(
     let mod_id_for_download = mod_id.clone();
     let downloader_for_download = get_downloader();
     let mut dl_guard = downloader_for_download.lock().await;
-    let mod_receiver_result = dl_guard.download_mods(&[mod_id_for_download], Some(&app)).await;
+    let mod_receiver_result = dl_guard.download_mods(&[mod_id_for_download], Some(&app), max_steamcmd_instances).await;
     drop(dl_guard); // Release lock before await
     
     let mut mod_receiver = match mod_receiver_result {

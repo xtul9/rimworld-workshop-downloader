@@ -14,6 +14,7 @@ pub async fn update_mods(
     mods: Vec<BaseMod>,
     backup_mods: bool,
     backup_directory: Option<String>,
+    max_steamcmd_instances: Option<usize>,
 ) -> Result<Vec<BaseMod>, String> {
     if mods.is_empty() {
         return Err("mods array is required".to_string());
@@ -51,10 +52,10 @@ pub async fn update_mods(
         let download_path = dl.download_path().clone();
         let mod_receiver_result = if mod_sizes.is_empty() {
             // No size information available, use simple download
-            dl.download_mods(&mod_ids, Some(&app)).await
+            dl.download_mods(&mod_ids, Some(&app), max_steamcmd_instances).await
         } else {
             // Use size-based load balancing
-            dl.download_mods_with_sizes(&mod_ids, Some(&mod_sizes), Some(&app)).await
+            dl.download_mods_with_sizes(&mod_ids, Some(&mod_sizes), Some(&app), max_steamcmd_instances).await
         };
         
         match mod_receiver_result {
