@@ -109,7 +109,7 @@
 }
 
 .mod-item {
-  padding: 8px 0 8px 8px;
+  padding: 8px;
   background-color: #f8f9fa;
   border: 1px solid transparent;
   border-radius: 4px;
@@ -311,23 +311,62 @@
 
 .mod-item-details {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 8px;
+  grid-template-columns: 100px 1fr 120px 180px;
+  gap: 12px;
+  width: 100%;
   font-size: 12px;
+  margin-top: auto;
+  align-items: center;
+}
+
+/* When mod.details is missing, only show ID column */
+.mod-item-details:has(.mod-detail-id:only-child) {
+  grid-template-columns: 100px;
 }
 
 .mod-detail {
   display: flex;
   gap: 6px;
+  align-items: center;
+  min-width: 0; /* Allows shrinking for ellipsis */
+}
+
+.mod-detail-id {
+  grid-column: 1;
+}
+
+.mod-detail-folder {
+  grid-column: 2;
+  min-width: 0; /* Allows folder to shrink */
+  max-width: 100%;
+}
+
+.mod-detail-size {
+  grid-column: 3;
+  width: 120px;
+  max-width: 120px;
+}
+
+.mod-detail-updated {
+  grid-column: 4;
+  width: 180px;
+  max-width: 180px;
+  justify-self: end; /* Align to right edge of grid cell */
 }
 
 .mod-detail-label {
   font-weight: 600;
   color: #666;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .mod-detail-value {
   color: #333;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0; /* Allows text to shrink and show ellipsis */
 }
 
 .mod-item-updating {

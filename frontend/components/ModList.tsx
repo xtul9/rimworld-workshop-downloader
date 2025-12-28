@@ -579,21 +579,21 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
                           </div>
                         )}
                         <div className="mod-item-details">
-                          <div className="mod-detail">
+                          <div className="mod-detail mod-detail-id">
                             <span className="mod-detail-label">ID:</span>
                             <span className="mod-detail-value">{mod.modId}</span>
                           </div>
                           {mod.details && (
                             <>
-                              <div className="mod-detail">
+                              <div className="mod-detail mod-detail-folder">
                                 <span className="mod-detail-label">Folder:</span>
                                 <span className="mod-detail-value">{mod.folder || mod.modPath}</span>
                               </div>
-                              <div className="mod-detail">
+                              <div className="mod-detail mod-detail-size">
                                 <span className="mod-detail-label">Size:</span>
                                 <span className="mod-detail-value">{formatSize(mod.details.file_size)}</span>
                               </div>
-                              <div className="mod-detail">
+                              <div className="mod-detail mod-detail-updated">
                                 <span className="mod-detail-label">Updated:</span>
                                 <span className="mod-detail-value">{formatDate(mod.details.time_updated)}</span>
                               </div>
