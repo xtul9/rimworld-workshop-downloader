@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { FixedSizeList as List } from "react-window";
 import { openUrl, revealItemInDir, openPath } from "@tauri-apps/plugin-opener";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { BaseMod } from "../types";
 import { useMods } from "../contexts/ModsContext";
 import { useInstalledMods } from "../contexts/InstalledModsContext";
@@ -487,6 +488,8 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
               // isUpdating is computed from modState - if mod has an active state, it's updating
               // Only show as updating if mod has an active state (not null, not "completed", not "failed")
               const isUpdating = modState !== null && modState !== "completed" && modState !== "failed";
+
+              const imageSrc = mod.previewImagePath ? convertFileSrc(mod.previewImagePath) : undefined;
               
               // Determine status text based on mod state
               // Only show status text if mod is actually updating (has an active state)
@@ -527,65 +530,78 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
                     </div>
                   ) : (
                     <>
-                      <div className="mod-item-header">
-                        <span className="mod-name">{mod.details?.title || mod.folder || mod.modId}</span>
-                        <div className="mod-badges">
-                          {mod.nonSteamMod && (
-                            <span 
-                              className="mod-non-steam-badge" 
-                              title="Non-Steam mod (not from Steam Workshop)"
-                            >
-                              🏠 Non-Steam
-                            </span>
-                          )}
-                          {!mod.details && !mod.nonSteamMod && (
-                            <span 
-                              className="mod-no-info-badge" 
-                              title={isUpdatingDetails 
-                                ? "Mod details are still being fetched from Steam Workshop!" 
-                                : "No mod information available (mod may be banned or unpublished)"}
-                            >
-                              ⚠️ No info
-                            </span>
-                          )}
-                          {mod.updated && <span className="mod-updated-badge">Updated</span>}
-                          {modState === "failed" && (
-                            <span 
-                              className="mod-error-badge" 
-                              title={modError || "Update failed"}
-                            >
-                              ❌ Failed
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                      {modError && (
-                        <div className="mod-item-error">
-                          <span className="mod-error-icon">⚠️</span>
-                          <span className="mod-error-text">{modError}</span>
-                        </div>
+                      {imageSrc && (
+                        <img 
+                          src={imageSrc}
+                          alt={`${mod.details?.title || mod.folder || mod.modId} preview`}
+                          className="mod-preview-image"
+                          onError={(e) => {
+                            const img = e.target as HTMLImageElement;
+                            img.style.display = 'none';
+                          }}
+                        />
                       )}
-                      <div className="mod-item-details">
-                        <div className="mod-detail">
-                          <span className="mod-detail-label">ID:</span>
-                          <span className="mod-detail-value">{mod.modId}</span>
+                      <div className="mod-item-content">
+                        <div className="mod-item-header">
+                          <span className="mod-name">{mod.details?.title || mod.folder || mod.modId}</span>
+                          <div className="mod-badges">
+                            {mod.nonSteamMod && (
+                              <span 
+                                className="mod-non-steam-badge" 
+                                title="Non-Steam mod (not from Steam Workshop)"
+                              >
+                                🏠 Non-Steam
+                              </span>
+                            )}
+                            {!mod.details && !mod.nonSteamMod && (
+                              <span 
+                                className="mod-no-info-badge" 
+                                title={isUpdatingDetails 
+                                  ? "Mod details are still being fetched from Steam Workshop!" 
+                                  : "No mod information available (mod may be banned or unpublished)"}
+                              >
+                                ⚠️ No info
+                              </span>
+                            )}
+                            {mod.updated && <span className="mod-updated-badge">Updated</span>}
+                            {modState === "failed" && (
+                              <span 
+                                className="mod-error-badge" 
+                                title={modError || "Update failed"}
+                              >
+                                ❌ Failed
+                              </span>
+                            )}
+                          </div>
                         </div>
-                        {mod.details && (
-                          <>
-                            <div className="mod-detail">
-                              <span className="mod-detail-label">Folder:</span>
-                              <span className="mod-detail-value">{mod.folder || mod.modPath}</span>
-                            </div>
-                            <div className="mod-detail">
-                              <span className="mod-detail-label">Size:</span>
-                              <span className="mod-detail-value">{formatSize(mod.details.file_size)}</span>
-                            </div>
-                            <div className="mod-detail">
-                              <span className="mod-detail-label">Updated:</span>
-                              <span className="mod-detail-value">{formatDate(mod.details.time_updated)}</span>
-                            </div>
-                          </>
+                        {modError && (
+                          <div className="mod-item-error">
+                            <span className="mod-error-icon">⚠️</span>
+                            <span className="mod-error-text">{modError}</span>
+                          </div>
                         )}
+                        <div className="mod-item-details">
+                          <div className="mod-detail">
+                            <span className="mod-detail-label">ID:</span>
+                            <span className="mod-detail-value">{mod.modId}</span>
+                          </div>
+                          {mod.details && (
+                            <>
+                              <div className="mod-detail">
+                                <span className="mod-detail-label">Folder:</span>
+                                <span className="mod-detail-value">{mod.folder || mod.modPath}</span>
+                              </div>
+                              <div className="mod-detail">
+                                <span className="mod-detail-label">Size:</span>
+                                <span className="mod-detail-value">{formatSize(mod.details.file_size)}</span>
+                              </div>
+                              <div className="mod-detail">
+                                <span className="mod-detail-label">Updated:</span>
+                                <span className="mod-detail-value">{formatDate(mod.details.time_updated)}</span>
+                              </div>
+                            </>
+                          )}
+                        </div>
                       </div>
                     </>
                   )}

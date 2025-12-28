@@ -26,6 +26,7 @@ pub struct BaseMod {
     pub updated: Option<bool>,
     #[serde(default)]
     pub non_steam_mod: bool,
+    pub preview_image_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -197,6 +198,39 @@ pub fn query_mod_info(mod_path: &Path) -> Result<Option<ModInfo>, Box<dyn std::e
             Ok(None)
         }
     }
+}
+
+/// Find preview image (preview.png) in About folder (case insensitive)
+/// Returns the path to the preview image if found, None otherwise
+pub fn find_preview_image(mod_path: &Path) -> Option<String> {
+    let about_path = mod_path.join("About");
+    
+    // Check if About folder exists
+    if !about_path.exists() || !about_path.is_dir() {
+        return None;
+    }
+    
+    // Try to read directory entries
+    let entries = match fs::read_dir(&about_path) {
+        Ok(entries) => entries,
+        Err(_) => return None,
+    };
+    
+    // Look for preview.png (case insensitive)
+    for entry in entries.flatten() {
+        let file_name = entry.file_name();
+        let file_name_str = file_name.to_string_lossy().to_lowercase();
+        
+        if file_name_str == "preview.png" {
+            // Found it! Return the full path as a string
+            if let Some(path_str) = entry.path().to_str() {
+                eprintln!("[ModScanner] Found preview image for mod at: {}", path_str);
+                return Some(path_str.to_string());
+            }
+        }
+    }
+    
+    None
 }
 
 /// Query mod ID from mod folder by reading PublishedFileId.txt
@@ -406,6 +440,13 @@ pub async fn query_mods_for_updates(
                     .and_then(|n| n.to_str())
                     .map(|s| s.to_string());
                 
+                let preview_image_path = find_preview_image(&folder_path);
+                if preview_image_path.is_some() {
+                    eprintln!("[ModScanner] Preview image found for mod {}: {:?}", info.mod_id, preview_image_path);
+                } else {
+                    eprintln!("[ModScanner] No preview image found for mod {} at {:?}", info.mod_id, folder_path);
+                }
+                
                 BaseMod {
                     mod_id: info.mod_id.clone(),
                     mod_path: folder_path.to_string_lossy().to_string(),
@@ -413,6 +454,7 @@ pub async fn query_mods_for_updates(
                     details: None,
                     updated: None,
                     non_steam_mod: info.is_non_steam,
+                    preview_image_path,
                 }
             })
         })
@@ -633,6 +675,13 @@ pub async fn list_installed_mods_fast(
                     .and_then(|n| n.to_str())
                     .map(|s| s.to_string());
                 
+                let preview_image_path = find_preview_image(&folder_path);
+                if preview_image_path.is_some() {
+                    eprintln!("[ModScanner] Preview image found for mod {}: {:?}", info.mod_id, preview_image_path);
+                } else {
+                    eprintln!("[ModScanner] No preview image found for mod {} at {:?}", info.mod_id, folder_path);
+                }
+                
                 BaseMod {
                     mod_id: info.mod_id.clone(),
                     mod_path: folder_path.to_string_lossy().to_string(),
@@ -640,6 +689,7 @@ pub async fn list_installed_mods_fast(
                     details: None, // Will be populated by update_mod_details later (only for Steam mods)
                     updated: None,
                     non_steam_mod: info.is_non_steam,
+                    preview_image_path,
                 }
             })
         })

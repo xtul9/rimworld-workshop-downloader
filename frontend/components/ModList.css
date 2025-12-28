@@ -118,8 +118,11 @@
   transition: all 0.2s;
   min-height: 72px;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
+  align-items: stretch;
+  gap: 12px;
   box-sizing: border-box;
+  position: relative;
 }
 
 /* Removed :last-child margin-bottom as react-window handles spacing */
@@ -193,6 +196,24 @@
   align-items: center;
   margin-bottom: 8px;
   gap: 8px;
+}
+
+.mod-preview-image {
+  width: 80px;
+  height: 100%;
+  max-height: 100%;
+  object-fit: cover;
+  border-radius: 4px;
+  flex-shrink: 0;
+  align-self: stretch;
+  display: block;
+}
+
+.mod-item-content {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0; /* Allows content to shrink if needed */
 }
 
 .mod-badges {
