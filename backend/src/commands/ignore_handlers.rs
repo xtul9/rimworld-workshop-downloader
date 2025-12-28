@@ -15,8 +15,17 @@ pub async fn ignore_update(
         return Ok(vec![]);
     }
     
+    // Filter out non-Steam mods - they can't have updates to ignore
+    let steam_mods: Vec<BaseMod> = mods.into_iter()
+        .filter(|m| !m.non_steam_mod)
+        .collect();
+    
+    if steam_mods.is_empty() {
+        return Ok(vec![]);
+    }
+    
     // Separate mods with and without details
-    let (mods_with_details, mods_without_details): (Vec<_>, Vec<_>) = mods
+    let (mods_with_details, mods_without_details): (Vec<_>, Vec<_>) = steam_mods
         .into_iter()
         .partition(|m| m.details.is_some());
     

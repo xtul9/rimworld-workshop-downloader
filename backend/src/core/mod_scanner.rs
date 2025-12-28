@@ -24,6 +24,8 @@ pub struct BaseMod {
     pub folder: Option<String>,
     pub details: Option<WorkshopFileDetails>,
     pub updated: Option<bool>,
+    #[serde(default)]
+    pub non_steam_mod: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -110,8 +112,17 @@ pub struct Tag {
     pub tag: String,
 }
 
-/// Query mod ID from mod folder by reading PublishedFileId.txt
-pub fn query_mod_id(mod_path: &Path) -> Result<Option<String>, Box<dyn std::error::Error>> {
+/// Information about a mod folder
+#[derive(Debug, Clone)]
+pub struct ModInfo {
+    pub mod_id: String,
+    pub is_non_steam: bool,
+}
+
+/// Query mod information from mod folder
+/// Returns ModInfo if it's a valid mod folder (with or without PublishedFileId.txt)
+/// Returns None if it's not a mod folder at all
+pub fn query_mod_info(mod_path: &Path) -> Result<Option<ModInfo>, Box<dyn std::error::Error>> {
     let about_path = mod_path.join("About");
     
     // Check if About folder exists and is a directory
@@ -133,27 +144,68 @@ pub fn query_mod_id(mod_path: &Path) -> Result<Option<String>, Box<dyn std::erro
     
     // Check if PublishedFileId.txt exists
     match fs::metadata(&file_id_path) {
-        Ok(_) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(None); // Not a workshop mod
-        }
-        Err(_e) => {
-            return Ok(None);
-        }
-    }
-    
-    // Read and parse mod ID
-    match fs::read_to_string(&file_id_path) {
-        Ok(content) => {
-            let file_id = content.trim();
-            if file_id.is_empty() {
-                return Ok(None);
+        Ok(_) => {
+            // Has PublishedFileId.txt - Steam Workshop mod
+            match fs::read_to_string(&file_id_path) {
+                Ok(content) => {
+                    let file_id = content.trim();
+                    if file_id.is_empty() {
+                        // Empty file - treat as non-Steam mod
+                        let mod_id = mod_path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| "unknown".to_string());
+                        Ok(Some(ModInfo {
+                            mod_id,
+                            is_non_steam: true,
+                        }))
+                    } else {
+                        Ok(Some(ModInfo {
+                            mod_id: file_id.to_string(),
+                            is_non_steam: false,
+                        }))
+                    }
+                }
+                Err(_e) => {
+                    // Can't read file - treat as non-Steam mod
+                    let mod_id = mod_path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| "unknown".to_string());
+                    Ok(Some(ModInfo {
+                        mod_id,
+                        is_non_steam: true,
+                    }))
+                }
             }
-            Ok(Some(file_id.to_string()))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // No PublishedFileId.txt - non-Steam mod
+            let mod_id = mod_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+            Ok(Some(ModInfo {
+                mod_id,
+                is_non_steam: true,
+            }))
         }
         Err(_e) => {
             Ok(None)
         }
+    }
+}
+
+/// Query mod ID from mod folder by reading PublishedFileId.txt
+/// Legacy function - kept for backward compatibility
+/// Returns None for non-Steam mods
+pub fn query_mod_id(mod_path: &Path) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    match query_mod_info(mod_path)? {
+        Some(info) if !info.is_non_steam => Ok(Some(info.mod_id)),
+        _ => Ok(None), // Non-Steam mod or not a mod folder
     }
 }
 
@@ -345,28 +397,29 @@ pub async fn query_mods_for_updates(
         return Ok(vec![]);
     }
 
-    // Query mod IDs from each folder in parallel
-    let mod_id_futures: Vec<_> = folders.into_iter().map(|folder| {
+    // Query mod information from each folder in parallel
+    let mod_info_futures: Vec<_> = folders.into_iter().map(|folder| {
         let folder_path = folder.clone();
         tokio::task::spawn_blocking(move || {
-            query_mod_id(&folder_path).ok().flatten().map(|mod_id| {
+            query_mod_info(&folder_path).ok().flatten().map(|info| {
                 let folder_name = folder_path.file_name()
                     .and_then(|n| n.to_str())
                     .map(|s| s.to_string());
                 
                 BaseMod {
-                    mod_id: mod_id.clone(),
+                    mod_id: info.mod_id.clone(),
                     mod_path: folder_path.to_string_lossy().to_string(),
                     folder: folder_name,
                     details: None,
                     updated: None,
+                    non_steam_mod: info.is_non_steam,
                 }
             })
         })
     }).collect();
     
     let mut mods: Vec<BaseMod> = Vec::new();
-    for future in mod_id_futures {
+    for future in mod_info_futures {
         if let Ok(Some(mod_item)) = future.await {
             mods.push(mod_item);
         }
@@ -376,18 +429,31 @@ pub async fn query_mods_for_updates(
         return Ok(vec![]);
     }
 
+    // Filter out non-Steam mods for API queries (they can't have Workshop details)
+    let steam_mods_indices: Vec<usize> = mods.iter()
+        .enumerate()
+        .filter_map(|(idx, m)| if !m.non_steam_mod { Some(idx) } else { None })
+        .collect();
+    
+    if steam_mods_indices.is_empty() {
+        // No Steam mods to check for updates
+        return Ok(vec![]);
+    }
+
     // Query mods in batches of 50
     const BATCH_COUNT: usize = 50;
 
     // Create batches and query them in parallel (with small staggered delays to avoid rate limiting)
-    let num_batches = (mods.len() + BATCH_COUNT - 1) / BATCH_COUNT;
+    let num_batches = (steam_mods_indices.len() + BATCH_COUNT - 1) / BATCH_COUNT;
     let mut batch_futures = Vec::new();
     
     for batch_idx in 0..num_batches {
         let start = batch_idx * BATCH_COUNT;
-        let end = std::cmp::min(start + BATCH_COUNT, mods.len());
-        let mod_ids: Vec<String> = mods[start..end].iter().map(|m| m.mod_id.clone()).collect();
-        let mod_indices = (start..end).collect::<Vec<usize>>();
+        let end = std::cmp::min(start + BATCH_COUNT, steam_mods_indices.len());
+        let mod_indices: Vec<usize> = steam_mods_indices[start..end].iter().cloned().collect();
+        let mod_ids: Vec<String> = mod_indices.iter()
+            .map(|&idx| mods[idx].mod_id.clone())
+            .collect();
         
         // Stagger batch starts with small delays to avoid rate limiting
         // But start them all immediately instead of waiting sequentially
@@ -426,17 +492,16 @@ pub async fn query_mods_for_updates(
         }
     }
 
-    let mods_with_details: Vec<&BaseMod> = mods.iter().filter(|m| m.details.is_some()).collect();
-    
-    if mods_with_details.is_empty() {
-        return Ok(vec![]);
-    }
-
     // Check which mods have updates available
-    // First, filter mods that pass basic validation checks
+    // First, filter mods that pass basic validation checks (only Steam mods can have updates)
     let mods_to_check: Vec<(usize, &BaseMod, &WorkshopFileDetails)> = mods.iter()
         .enumerate()
         .filter_map(|(idx, mod_ref)| {
+            // Skip non-Steam mods - they can't have Workshop updates
+            if mod_ref.non_steam_mod {
+                return None;
+            }
+            
             let details = mod_ref.details.as_ref()?;
             
             // Check for various error conditions
@@ -559,28 +624,29 @@ pub async fn list_installed_mods_fast(
         return Ok(vec![]);
     }
 
-    // Query mod IDs from each folder in parallel
-    let mod_id_futures: Vec<_> = folders.into_iter().map(|folder| {
+    // Query mod information from each folder in parallel
+    let mod_info_futures: Vec<_> = folders.into_iter().map(|folder| {
         let folder_path = folder.clone();
         tokio::task::spawn_blocking(move || {
-            query_mod_id(&folder_path).ok().flatten().map(|mod_id| {
+            query_mod_info(&folder_path).ok().flatten().map(|info| {
                 let folder_name = folder_path.file_name()
                     .and_then(|n| n.to_str())
                     .map(|s| s.to_string());
                 
                 BaseMod {
-                    mod_id: mod_id.clone(),
+                    mod_id: info.mod_id.clone(),
                     mod_path: folder_path.to_string_lossy().to_string(),
                     folder: folder_name,
-                    details: None, // Will be populated by update_mod_details later
+                    details: None, // Will be populated by update_mod_details later (only for Steam mods)
                     updated: None,
+                    non_steam_mod: info.is_non_steam,
                 }
             })
         })
     }).collect();
     
     let mut mods: Vec<BaseMod> = Vec::new();
-    for future in mod_id_futures {
+    for future in mod_info_futures {
         if let Ok(Some(mod_item)) = future.await {
             mods.push(mod_item);
         }
@@ -602,15 +668,30 @@ pub async fn update_mod_details(
     const BATCH_COUNT: usize = 50;
     let mut updated_mods = mods;
 
+    // Separate Steam mods (can fetch details) from non-Steam mods (can't fetch details)
+    let mut steam_mod_indices = Vec::new();
+    let mut steam_mod_ids = Vec::new();
+    
+    for (idx, mod_ref) in updated_mods.iter().enumerate() {
+        if !mod_ref.non_steam_mod {
+            steam_mod_indices.push(idx);
+            steam_mod_ids.push(mod_ref.mod_id.clone());
+        }
+    }
+
     // Create batches and query them in parallel (with small staggered delays to avoid rate limiting)
-    let num_batches = (updated_mods.len() + BATCH_COUNT - 1) / BATCH_COUNT;
+    let num_batches = if steam_mod_ids.is_empty() {
+        0
+    } else {
+        (steam_mod_ids.len() + BATCH_COUNT - 1) / BATCH_COUNT
+    };
     let mut batch_futures = Vec::new();
     
     for batch_idx in 0..num_batches {
         let start = batch_idx * BATCH_COUNT;
-        let end = std::cmp::min(start + BATCH_COUNT, updated_mods.len());
-        let mod_ids: Vec<String> = updated_mods[start..end].iter().map(|m| m.mod_id.clone()).collect();
-        let mod_indices = (start..end).collect::<Vec<usize>>();
+        let end = std::cmp::min(start + BATCH_COUNT, steam_mod_ids.len());
+        let mod_ids: Vec<String> = steam_mod_ids[start..end].iter().cloned().collect();
+        let mod_indices: Vec<usize> = steam_mod_indices[start..end].iter().cloned().collect();
         
         // Stagger batch starts with small delays to avoid rate limiting
         // But start them all immediately instead of waiting sequentially

@@ -226,9 +226,11 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
     // Check if mod has details - details can be undefined, null, or empty object
     // A mod has valid details if details exists and has a title (which means it was successfully fetched)
     const hasModDetails = Boolean(mod.details?.title);
+    const isNonSteamMod = mod.nonSteamMod || false;
     // For multiple mods, check if all selected mods (including the clicked one if selected) have details
     const modsToCheck = selected.length > 1 ? selected : [mod];
     const allModsHaveDetails = modsToCheck.every(m => Boolean(m.details?.title));
+    const allModsAreSteam = modsToCheck.every(m => !m.nonSteamMod);
     
     const items: ContextMenuItem[] = [];
     
@@ -238,7 +240,7 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
         { 
           label: useInstalledModsContext ? "Force update selected mods" : "Update selected mods", 
           action: "update",
-          disabled: !allModsHaveDetails
+          disabled: !allModsHaveDetails || !allModsAreSteam
         },
         { separator: true }
       );
@@ -246,7 +248,11 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
       // Only show "Hide for now" in Query & Update tab
       if (!useInstalledModsContext) {
         items.push({ label: "Hide for now", action: "ignore-from-list" });        
-        items.push({ label: "Ignore this update", action: "ignore-this-update" });
+        items.push({ 
+          label: "Ignore this update", 
+          action: "ignore-this-update",
+          disabled: !allModsAreSteam
+        });
       }
       
       items.push(
@@ -258,7 +264,7 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
         { 
           label: useInstalledModsContext ? "Force update" : "Update", 
           action: "update",
-          disabled: !hasModDetails
+          disabled: !hasModDetails || isNonSteamMod
         },
         { 
           label: hasBackup ? "Restore Backup" : "No backup available", 
@@ -267,15 +273,27 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
         },
         { separator: true },
         { label: "Open mod folder", action: "open-folder" },
-        { label: "Open workshop page", action: "open-workshop" },
-        { label: "Open changelog page", action: "open-changelog" },
+        { 
+          label: "Open workshop page", 
+          action: "open-workshop",
+          disabled: isNonSteamMod
+        },
+        { 
+          label: "Open changelog page", 
+          action: "open-changelog",
+          disabled: isNonSteamMod
+        },
         { separator: true }
       );
       
       // Only show "Hide for now" in Query & Update tab
       if (!useInstalledModsContext) {
         items.push({ label: "Hide for now", action: "ignore-from-list" });
-        items.push({ label: "Ignore this update", action: "ignore-this-update" });
+        items.push({ 
+          label: "Ignore this update", 
+          action: "ignore-this-update",
+          disabled: isNonSteamMod
+        });
       }
       
       items.push(
@@ -473,7 +491,7 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
                     height: `${parseInt(style.height as string) - 8}px`,
                     marginBottom: "8px",
                   }}
-                  className={`mod-item ${selectedMods.has(mod.modId) ? "selected" : ""} ${mod.updated ? "updated" : ""} ${isUpdating ? "updating" : ""} ${!mod.details ? "no-details" : ""}`}
+                  className={`mod-item ${selectedMods.has(mod.modId) ? "selected" : ""} ${mod.updated ? "updated" : ""} ${isUpdating ? "updating" : ""} ${!mod.details ? "no-details" : ""} ${mod.nonSteamMod ? "non-steam-mod" : ""}`}
                   onClick={(e) => !isUpdating && handleSelectMod(mod.modId, e.ctrlKey || e.metaKey, e.shiftKey, index)}
                   onContextMenu={(e) => !isUpdating && handleContextMenu(e, mod)}
                 >
@@ -490,7 +508,15 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
                       <div className="mod-item-header">
                         <span className="mod-name">{mod.details?.title || mod.folder || mod.modId}</span>
                         <div className="mod-badges">
-                          {!mod.details && (
+                          {mod.nonSteamMod && (
+                            <span 
+                              className="mod-non-steam-badge" 
+                              title="Non-Steam mod (not from Steam Workshop)"
+                            >
+                              🏠 Non-Steam
+                            </span>
+                          )}
+                          {!mod.details && !mod.nonSteamMod && (
                             <span 
                               className="mod-no-info-badge" 
                               title={isUpdatingDetails 

@@ -4,6 +4,7 @@ export interface BaseMod {
   folder?: string;
   details?: WorkshopFileDetails;
   updated?: boolean;
+  nonSteamMod?: boolean;
 }
 
 export interface WorkshopFileDetails {

@@ -19,15 +19,24 @@ pub async fn update_mods(
         return Err("mods array is required".to_string());
     }
     
+    // Filter out non-Steam mods - they can't be updated from Workshop
+    let steam_mods: Vec<BaseMod> = mods.into_iter()
+        .filter(|m| !m.non_steam_mod)
+        .collect();
+    
+    if steam_mods.is_empty() {
+        return Err("No Steam Workshop mods to update. Non-Steam mods cannot be updated.".to_string());
+    }
+    
     // Extract modsPath from first mod
-    let first_mod = &mods[0];
+    let first_mod = &steam_mods[0];
     let mods_path = get_mods_path_from_mod_path(&PathBuf::from(&first_mod.mod_path))?;
     
     // Prepare mods for download
-    let mod_ids: Vec<String> = mods.iter().map(|m| m.mod_id.clone()).collect();
+    let mod_ids: Vec<String> = steam_mods.iter().map(|m| m.mod_id.clone()).collect();
     
     // Build mod sizes map for load balancing
-    let mod_sizes: HashMap<String, u64> = mods
+    let mod_sizes: HashMap<String, u64> = steam_mods
         .iter()
         .filter_map(|m| {
             m.details.as_ref().map(|d| (m.mod_id.clone(), d.file_size))
@@ -55,7 +64,7 @@ pub async fn update_mods(
     }
     
     // Create HashMap for O(1) lookup instead of O(n) find()
-    let mods_map: HashMap<String, &BaseMod> = mods.iter()
+    let mods_map: HashMap<String, &BaseMod> = steam_mods.iter()
         .map(|m| (m.mod_id.clone(), m))
         .collect();
     
