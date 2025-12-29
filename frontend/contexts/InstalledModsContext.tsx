@@ -306,8 +306,8 @@ export function InstalledModsProvider({ children }: { children: ReactNode }) {
       unlistenAdded?.();
       unlistenRemoved?.();
       
-      // Stop mod watcher when component unmounts or modsPath changes
-      invoke("stop_mod_watcher").catch(console.error);
+      // Note: We don't stop mod watcher here because it's managed by the separate useEffect
+      // that depends only on modsPath. Stopping it here would break watcher when sort settings change.
     };
   }, [settings.modsPath, settings.installedModsSortBy, settings.installedModsSortOrder]);
   
