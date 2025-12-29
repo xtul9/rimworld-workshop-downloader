@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::fs;
 use crate::core::mod_scanner::query_mod_id;
+use crate::services::{ignore_path_in_watcher, WatcherIgnoreGuard, is_update_cancelled};
 use quick_xml::events::Event;
 use quick_xml::Reader;
 
@@ -119,7 +120,9 @@ impl ModUpdater {
                             }
                         }
                         
-                        if !Self::is_mod_corrupted(&proposed_path) {
+                        // Only check package ID if path exists and is not corrupted
+                        // (when force_overwrite_corrupted is Some(false), proposed_path may not exist)
+                        if proposed_path.exists() && !Self::is_mod_corrupted(&proposed_path) {
                             let existing_package_id = Self::get_package_id(&proposed_path);
                         
                         match (source_package_id.as_ref(), existing_package_id.as_ref()) {
@@ -244,7 +247,6 @@ impl ModUpdater {
         }
 
         // Ignore this path in mod watcher during update operation
-        use crate::services::{ignore_path_in_watcher, WatcherIgnoreGuard, is_update_cancelled};
         ignore_path_in_watcher(mod_destination_path.clone()).await;
         let _guard = WatcherIgnoreGuard::new(mod_destination_path.clone()).await;
 
