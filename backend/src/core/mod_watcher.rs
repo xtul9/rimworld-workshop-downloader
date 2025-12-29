@@ -285,7 +285,6 @@ impl ModWatcher {
             .collect();
 
         if paths.is_empty() {
-            eprintln!("[ModWatcher] No valid paths found for event");
             return;
         }
 
