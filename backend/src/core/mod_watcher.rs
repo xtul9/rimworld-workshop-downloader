@@ -17,6 +17,7 @@ pub struct ModWatcher {
     known_mods: Arc<Mutex<HashMap<PathBuf, String>>>, // Track folder path -> mod_id mapping to detect additions/removals
     pending_folders: Arc<Mutex<HashSet<PathBuf>>>, // Track folders that might become mods (don't have About/ yet)
     ignored_paths: Arc<Mutex<HashSet<PathBuf>>>, // Track paths to ignore during app operations (updates, restores, etc.)
+    periodic_check_handle: Option<tokio::task::JoinHandle<()>>, // Handle for periodic check task to allow cancellation
 }
 
 impl ModWatcher {
@@ -28,6 +29,7 @@ impl ModWatcher {
             known_mods: Arc::new(Mutex::new(HashMap::new())),
             pending_folders: Arc::new(Mutex::new(HashSet::new())),
             ignored_paths: Arc::new(Mutex::new(HashSet::new())),
+            periodic_check_handle: None,
         }
     }
 
@@ -106,13 +108,14 @@ impl ModWatcher {
         let known_mods_clone_retry = self.known_mods.clone();
         let pending_folders_clone_retry = self.pending_folders.clone();
         let ignored_paths_clone_retry = self.ignored_paths.clone();
-        tokio::spawn(async move {
+        let periodic_check_handle = tokio::spawn(async move {
             let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
             loop {
                 interval.tick().await;
                 Self::check_pending_folders(&app_clone_retry, &canonical_mods_path_clone_retry, &known_mods_clone_retry, &pending_folders_clone_retry, &ignored_paths_clone_retry).await;
             }
         });
+        self.periodic_check_handle = Some(periodic_check_handle);
 
         // Create watcher
         let mut watcher: RecommendedWatcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
@@ -137,6 +140,12 @@ impl ModWatcher {
 
     /// Stop watching the mods folder
     pub async fn stop_watching(&mut self) {
+        // Cancel periodic check task if it's running
+        if let Some(handle) = self.periodic_check_handle.take() {
+            handle.abort();
+            eprintln!("[ModWatcher] Cancelled periodic check task");
+        }
+        
         if let Some(watcher) = self.watcher.take() {
             drop(watcher);
             eprintln!("[ModWatcher] Stopped watching mods folder");
