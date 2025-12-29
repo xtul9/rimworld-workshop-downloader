@@ -224,7 +224,6 @@ pub fn find_preview_image(mod_path: &Path) -> Option<String> {
         if file_name_str == "preview.png" {
             // Found it! Return the full path as a string
             if let Some(path_str) = entry.path().to_str() {
-                eprintln!("[ModScanner] Found preview image for mod at: {}", path_str);
                 return Some(path_str.to_string());
             }
         }
@@ -441,11 +440,6 @@ pub async fn query_mods_for_updates(
                     .map(|s| s.to_string());
                 
                 let preview_image_path = find_preview_image(&folder_path);
-                if preview_image_path.is_some() {
-                    eprintln!("[ModScanner] Preview image found for mod {}: {:?}", info.mod_id, preview_image_path);
-                } else {
-                    eprintln!("[ModScanner] No preview image found for mod {} at {:?}", info.mod_id, folder_path);
-                }
                 
                 BaseMod {
                     mod_id: info.mod_id.clone(),
@@ -676,11 +670,6 @@ pub async fn list_installed_mods_fast(
                     .map(|s| s.to_string());
                 
                 let preview_image_path = find_preview_image(&folder_path);
-                if preview_image_path.is_some() {
-                    eprintln!("[ModScanner] Preview image found for mod {}: {:?}", info.mod_id, preview_image_path);
-                } else {
-                    eprintln!("[ModScanner] No preview image found for mod {} at {:?}", info.mod_id, folder_path);
-                }
                 
                 BaseMod {
                     mod_id: info.mod_id.clone(),
