@@ -7,7 +7,7 @@ interface MessageModalProps {
   type?: "error" | "info" | "warning";
 }
 
-export default function MessageModal({ title, message, type = "info" }: MessageModalProps) {
+export default function MessageModal({ title, message }: MessageModalProps) {
   const { closeModal } = useModal();
 
   return (

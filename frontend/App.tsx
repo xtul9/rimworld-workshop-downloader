@@ -23,7 +23,7 @@ function AppContent() {
   const { error } = useModsPath();
   const { settings, isLoading } = useSettings();
   const { modalType, modalData } = useModal();
-  const { hasActiveError, permissions } = useAccessError();
+  const { hasActiveError } = useAccessError();
   const [activeTab, setActiveTab] = useState<"query" | "download" | "installed" | "settings">("query");
   const [initialTabSet, setInitialTabSet] = useState(false);
   
