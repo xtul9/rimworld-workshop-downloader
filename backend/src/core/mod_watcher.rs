@@ -34,23 +34,17 @@ impl ModWatcher {
     /// Ignore events for a specific path (used during app operations like updates/restores)
     pub async fn ignore_path(&self, path: PathBuf) {
         let mut ignored = self.ignored_paths.lock().await;
-        // Try to canonicalize, but use original if it fails
         use crate::services::canonicalize_path_or_fallback;
         let canonical_path = canonicalize_path_or_fallback(&path);
-        let canonical_path_clone = canonical_path.clone();
         ignored.insert(canonical_path);
-        eprintln!("[ModWatcher] Ignoring path: {:?}", canonical_path_clone);
     }
 
     /// Stop ignoring events for a specific path
     pub async fn unignore_path(&self, path: PathBuf) {
         let mut ignored = self.ignored_paths.lock().await;
-        // Try to canonicalize, but use original if it fails
         use crate::services::canonicalize_path_or_fallback;
         let canonical_path = canonicalize_path_or_fallback(&path);
-        let canonical_path_clone = canonical_path.clone();
         ignored.remove(&canonical_path);
-        eprintln!("[ModWatcher] Stopped ignoring path: {:?}", canonical_path_clone);
     }
 
     /// Start watching the mods folder for changes
@@ -137,8 +131,7 @@ impl ModWatcher {
         eprintln!("[ModWatcher] Watching canonical path: {:?}", canonical_mods_path);
 
         self.watcher = Some(watcher);
-
-        eprintln!("[ModWatcher] Started watching mods folder: {:?}", mods_path);
+        
         Ok(())
     }
 
@@ -186,7 +179,34 @@ impl ModWatcher {
             return;
         }
         
-        eprintln!("[ModWatcher] Received event: {:?}, paths: {:?}", event.kind, event.paths);
+        // First, check if any path is inside an ignored folder (before processing)
+        // This prevents logging events for files inside mods being updated
+        let ignored = ignored_paths.lock().await;
+        let is_inside_ignored = event.paths.iter().any(|p| {
+            // For each ignored path, check if event path starts with it
+            for ignored_path in ignored.iter() {
+                // Try to canonicalize event path first (most reliable)
+                if let Ok(canon_p) = p.canonicalize() {
+                    if canon_p.starts_with(ignored_path) {
+                        return true;
+                    }
+                }
+                // Fallback: check if string representation starts with ignored path
+                // This handles cases where canonicalization fails (file being copied)
+                let p_str = p.to_string_lossy();
+                let ignored_str = ignored_path.to_string_lossy();
+                if p_str.starts_with(ignored_str.as_ref()) {
+                    return true;
+                }
+            }
+            false
+        });
+        drop(ignored);
+        
+        if is_inside_ignored {
+            // Silently ignore events inside ignored folders (app operations in progress)
+            return;
+        }
         
         // Check if the event is for a directory (mod folder) directly under mods_path
         // Note: mods_path is already canonicalized, so we should canonicalize event paths too
@@ -253,6 +273,7 @@ impl ModWatcher {
         }
 
         // Check if any of the paths are being ignored (app operations in progress)
+        // This is a second check after filtering to direct children
         let ignored = ignored_paths.lock().await;
         let filtered_paths: Vec<PathBuf> = paths.into_iter()
             .filter(|p| {
@@ -260,7 +281,6 @@ impl ModWatcher {
                 let mut current = p.clone();
                 loop {
                     if ignored.contains(&current) {
-                        eprintln!("[ModWatcher] Ignoring event for path (app operation in progress): {:?}", p);
                         return false;
                     }
                     if let Some(parent) = current.parent() {
