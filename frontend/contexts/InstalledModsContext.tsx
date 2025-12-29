@@ -233,16 +233,21 @@ export function InstalledModsProvider({ children }: { children: ReactNode }) {
           });
         } else {
           // Handle error - but only if not in retry-queued state
-          const currentState = modStates.get(modId);
-          if (currentState !== "retry-queued") {
-            console.error(`[EVENT] Mod update failed: ${modId}, error: ${error}`);
-            // Store error for this mod
-            setModErrors(prev => {
-              const newMap = new Map(prev);
-              newMap.set(modId, error || "Update failed");
-              return newMap;
-            });
-          }
+          // Use callback pattern to get current state (not stale closure)
+          setModStates(prev => {
+            const currentState = prev.get(modId);
+            if (currentState !== "retry-queued") {
+              console.error(`[EVENT] Mod update failed: ${modId}, error: ${error}`);
+              // Store error for this mod
+              setModErrors(prevErrors => {
+                const newMap = new Map(prevErrors);
+                newMap.set(modId, error || "Update failed");
+                return newMap;
+              });
+            }
+            // Return unchanged state map (we're just checking, not updating)
+            return prev;
+          });
         }
       });
 
