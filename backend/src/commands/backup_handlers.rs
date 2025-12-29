@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use serde_json;
 use tauri::{command, AppHandle};
-use crate::services::extract_folder_name;
+use crate::services::{extract_folder_name, get_mods_path_from_mod_path};
 use crate::core::access_check::ensure_directory_access;
 
 /// Check if backup exists for a mod (optimized with spawn_blocking)
@@ -155,8 +155,11 @@ pub async fn restore_backup(
     let normalized_mod_path = PathBuf::from(&mod_path);
     let normalized_backup_directory = PathBuf::from(&backup_directory);
     
-    // Check directory access to mod_path (write access is required for restore)
-    ensure_directory_access(&app, &normalized_mod_path, &mod_path)?;
+    // Check directory access to parent mods directory (write access is required for restore)
+    // Use parent directory because the mod folder may not exist when restoring a deleted mod
+    let mods_path = get_mods_path_from_mod_path(&normalized_mod_path)?;
+    let mods_path_str = mods_path.to_string_lossy().to_string();
+    ensure_directory_access(&app, &mods_path, &mods_path_str)?;
     
     // Safety check: ensure backupDirectory is not inside modPath (or vice versa)
     if normalized_mod_path.starts_with(&normalized_backup_directory) ||
