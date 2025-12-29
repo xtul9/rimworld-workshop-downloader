@@ -21,6 +21,7 @@ const ModalContext = createContext<ModalContextType | undefined>(undefined);
 
 export function ModalProvider({ children }: { children: ReactNode }) {
   const [modalQueue, setModalQueue] = useState<ModalQueueItem[]>([]);
+  const [totalQueueLength, setTotalQueueLength] = useState<number>(0);
   const [modalType, setModalType] = useState<ModalType>(null);
   const [modalData, setModalData] = useState<any>(null);
 
@@ -29,16 +30,17 @@ export function ModalProvider({ children }: { children: ReactNode }) {
     
     setModalQueue(prev => {
       const newQueue = [...prev, newItem];
-      const position = newQueue.length;
+      const newTotalLength = newQueue.length;
       const isQueueEmpty = prev.length === 0;
+      
+      // Update total queue length
+      setTotalQueueLength(newTotalLength);
       
       // If no modal is currently shown, show this one immediately
       if (isQueueEmpty) {
         setModalType(type);
         setModalData({
           ...(data || {}),
-          queuePosition: position,
-          queueLength: position,
         });
       }
       
@@ -56,18 +58,24 @@ export function ModalProvider({ children }: { children: ReactNode }) {
         setModalType(nextModal.type);
         setModalData({
           ...(nextModal.data || {}),
-          queuePosition: 1,
-          queueLength: rest.length,
         });
         return rest;
       } else {
         // Queue is empty
         setModalType(null);
         setModalData(null);
+        setTotalQueueLength(0);
         return [];
       }
     });
   }, []);
+
+  // Calculate current position: totalQueueLength - remaining items + 1
+  // If queue is empty, position is 0
+  const queuePosition = modalQueue.length > 0 
+    ? totalQueueLength - modalQueue.length + 1 
+    : 0;
+  const queueLength = totalQueueLength;
 
   return (
     <ModalContext.Provider
@@ -77,8 +85,8 @@ export function ModalProvider({ children }: { children: ReactNode }) {
         modalType,
         modalData,
         isModalOpen: modalType !== null,
-        queueLength: modalQueue.length,
-        queuePosition: modalData?.queuePosition || 0,
+        queueLength,
+        queuePosition,
       }}
     >
       {children}

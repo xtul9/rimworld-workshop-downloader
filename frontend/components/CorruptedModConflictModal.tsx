@@ -18,13 +18,11 @@ export default function CorruptedModConflictModal({
   onResolve,
   onReject
 }: CorruptedModConflictModalProps) {
-  const { closeModal, modalData } = useModal();
+  const { closeModal, queuePosition, queueLength } = useModal();
   const { permissions } = useAccessError();
   const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   
-  const queuePosition = modalData?.queuePosition || 0;
-  const queueLength = modalData?.queueLength || 0;
   const showQueueInfo = queueLength > 1;
 
   const handleOverwrite = useCallback(async () => {
