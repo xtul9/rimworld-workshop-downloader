@@ -39,6 +39,7 @@ export default function DownloadTab() {
   const [showImportModal, setShowImportModal] = useState(false);
   const [importText, setImportText] = useState("");
   const inputRefs = useRef<{ [key: string]: HTMLInputElement | null }>({});
+  const isDownloadLoopActiveRef = useRef(false);
 
   // Listen for real-time download events from backend
   useEffect(() => {
@@ -321,8 +322,9 @@ export default function DownloadTab() {
         )
       );
       
-      setIsDownloading(false);
-      setDownloadStatus("Download cancelled");
+      // Don't set isDownloading to false here - let the loop finish naturally
+      // The loop will check the cancellation flag and exit, then set isDownloading to false in finally block
+      setDownloadStatus("Cancelling download...");
     } catch (error) {
       console.error("Failed to cancel download:", error);
     }
@@ -331,7 +333,9 @@ export default function DownloadTab() {
   const handleDownloadAll = async () => {
     // Include both "ready" and "cancelled" mods (cancelled mods can be retried)
     const readyMods = modInputs.filter(m => (m.status === "ready" || m.status === "cancelled") && m.modId);
-    if (readyMods.length === 0 || isDownloading) return;
+    
+    // Check both state and ref to prevent concurrent loops
+    if (readyMods.length === 0 || isDownloading || isDownloadLoopActiveRef.current) return;
 
     if (!permissions.canWrite) {
       openModal("message", {
@@ -341,6 +345,9 @@ export default function DownloadTab() {
       });
       return;
     }
+
+    // Mark loop as active before starting
+    isDownloadLoopActiveRef.current = true;
 
     // Reset cancellation flag before starting download
     try {
@@ -508,6 +515,7 @@ export default function DownloadTab() {
       setDownloadStatus("Error during download");
     } finally {
       setIsDownloading(false);
+      isDownloadLoopActiveRef.current = false;
     }
   };
 
