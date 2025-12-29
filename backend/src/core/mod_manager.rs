@@ -108,6 +108,7 @@ impl ModUpdater {
                                         // Safety limit
                                         if folder_name.len() > base_name.len() + 50 {
                                             folder_name = format!("{}_{}", base_name, mod_id);
+                                            proposed_path = mods_path.join(&folder_name);
                                             break;
                                         }
                                     }
