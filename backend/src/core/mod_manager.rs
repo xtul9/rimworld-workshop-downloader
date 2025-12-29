@@ -99,6 +99,7 @@ impl ModUpdater {
                                 Some(false) => {
                                     // Force rename - change folder name
                                     let base_name = folder_name.clone();
+                                    let mut fallback_used = false;
                                     loop {
                                         folder_name = format!("{}_", folder_name);
                                         proposed_path = mods_path.join(&folder_name);
@@ -107,9 +108,34 @@ impl ModUpdater {
                                         }
                                         // Safety limit
                                         if folder_name.len() > base_name.len() + 50 {
-                                            folder_name = format!("{}_{}", base_name, mod_id);
-                                            proposed_path = mods_path.join(&folder_name);
-                                            break;
+                                            if !fallback_used {
+                                                // First fallback: use mod_id
+                                                folder_name = format!("{}_{}", base_name, mod_id);
+                                                proposed_path = mods_path.join(&folder_name);
+                                                fallback_used = true;
+                                                // Check if fallback path is unique
+                                                if !proposed_path.exists() {
+                                                    break;
+                                                }
+                                                // If fallback exists, continue with underscores
+                                                continue;
+                                            } else {
+                                                // Second fallback: use timestamp to guarantee uniqueness
+                                                // This ensures we never overwrite when user chose "Rename"
+                                                let timestamp = std::time::SystemTime::now()
+                                                    .duration_since(std::time::UNIX_EPOCH)
+                                                    .unwrap()
+                                                    .as_secs();
+                                                folder_name = format!("{}_{}_{}", base_name, mod_id, timestamp);
+                                                proposed_path = mods_path.join(&folder_name);
+                                                // Timestamp should guarantee uniqueness, but check anyway
+                                                if !proposed_path.exists() {
+                                                    break;
+                                                }
+                                                // If even timestamp exists (extremely unlikely), add one more underscore
+                                                folder_name = format!("{}_{}_{}_", base_name, mod_id, timestamp);
+                                                break;
+                                            }
                                         }
                                     }
                                     eprintln!("[ModUpdater] Force renaming corrupted mod, using \"{}\" instead", folder_name);
@@ -149,6 +175,23 @@ impl ModUpdater {
                                         // Safety limit - if we've added too many underscores, use mod_id
                                         if folder_name.len() > base_name.len() + 50 {
                                             folder_name = format!("{}_{}", base_name, mod_id);
+                                            proposed_path = mods_path.join(&folder_name);
+                                            // Check if fallback path exists and has same packageId (can overwrite)
+                                            if let Some(existing_id_check) = Self::get_package_id(&proposed_path) {
+                                                if existing_id_check == *src_id {
+                                                    // Same packageId - can overwrite
+                                                    break;
+                                                }
+                                            } else if !proposed_path.exists() {
+                                                // Path doesn't exist - unique name found
+                                                break;
+                                            }
+                                            // Fallback path exists with different packageId - use timestamp to guarantee uniqueness
+                                            let timestamp = std::time::SystemTime::now()
+                                                .duration_since(std::time::UNIX_EPOCH)
+                                                .unwrap()
+                                                .as_secs();
+                                            folder_name = format!("{}_{}_{}", base_name, mod_id, timestamp);
                                             break;
                                         }
                                     }
@@ -169,6 +212,17 @@ impl ModUpdater {
                                     // Safety limit
                                     if folder_name.len() > base_name.len() + 50 {
                                         folder_name = format!("{}_{}", base_name, mod_id);
+                                        proposed_path = mods_path.join(&folder_name);
+                                        // Check if fallback path is unique
+                                        if !proposed_path.exists() {
+                                            break;
+                                        }
+                                        // Fallback path exists - use timestamp to guarantee uniqueness
+                                        let timestamp = std::time::SystemTime::now()
+                                            .duration_since(std::time::UNIX_EPOCH)
+                                            .unwrap()
+                                            .as_secs();
+                                        folder_name = format!("{}_{}_{}", base_name, mod_id, timestamp);
                                         break;
                                     }
                                 }
@@ -187,6 +241,17 @@ impl ModUpdater {
                                     // Safety limit
                                     if folder_name.len() > base_name.len() + 50 {
                                         folder_name = format!("{}_{}", base_name, mod_id);
+                                        proposed_path = mods_path.join(&folder_name);
+                                        // Check if fallback path is unique
+                                        if !proposed_path.exists() {
+                                            break;
+                                        }
+                                        // Fallback path exists - use timestamp to guarantee uniqueness
+                                        let timestamp = std::time::SystemTime::now()
+                                            .duration_since(std::time::UNIX_EPOCH)
+                                            .unwrap()
+                                            .as_secs();
+                                        folder_name = format!("{}_{}_{}", base_name, mod_id, timestamp);
                                         break;
                                     }
                                 }
