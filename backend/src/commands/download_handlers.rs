@@ -296,9 +296,16 @@ pub async fn continue_download_with_decision(
         "success": true,
     }));
     
+    // Extract folder name from mod_path (the actual folder name used, which may differ from original if renamed)
+    let folder = mod_path.file_name()
+        .and_then(|n| n.to_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| mod_id.clone());
+    
     Ok(serde_json::json!({
         "modId": mod_id,
         "modPath": mod_path.to_string_lossy(),
+        "folder": folder,
     }))
 }
 

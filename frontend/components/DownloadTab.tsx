@@ -551,7 +551,7 @@ export default function DownloadTab() {
               modTitle: modTitle || details.title || modId,
               onResolve: async (overwrite: boolean) => {
                 try {
-                  const result = await invoke<{ modId: string; modPath: string }>("continue_download_with_decision", {
+                  const result = await invoke<{ modId: string; modPath: string; folder: string }>("continue_download_with_decision", {
                     modId: modId,
                     modsPath: modsPath,
                     overwrite: overwrite
@@ -561,7 +561,7 @@ export default function DownloadTab() {
                   const mod: BaseMod = {
                     modId: result.modId,
                     modPath: result.modPath,
-                    folder: folderName,
+                    folder: result.folder, // Use actual folder name from backend (may differ if renamed)
                     details: details,
                     updated: undefined
                   };
