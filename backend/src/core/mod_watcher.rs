@@ -688,11 +688,40 @@ impl ModWatcher {
 
 impl Drop for ModWatcher {
     fn drop(&mut self) {
-        // Stop watching on drop
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            self.stop_watching().await;
-        });
+        // Stop watching on drop - perform minimal synchronous cleanup
+        // The watcher itself can be dropped synchronously
+        if let Some(watcher) = self.watcher.take() {
+            drop(watcher);
+            eprintln!("[ModWatcher] Stopped watching mods folder (on drop)");
+        }
+        
+        // Clear synchronous fields
+        self.mods_path = None;
+        self.app_handle = None;
+        
+        // For async structures, try to clean up if we're in an async context
+        // Otherwise, they'll be cleaned up when the Arc is dropped
+        let known_mods = self.known_mods.clone();
+        let pending_folders = self.pending_folders.clone();
+        let ignored_paths = self.ignored_paths.clone();
+        
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            // We're in an async context, spawn cleanup tasks
+            handle.spawn(async move {
+                let mut known = known_mods.lock().await;
+                known.clear();
+            });
+            handle.spawn(async move {
+                let mut pending = pending_folders.lock().await;
+                pending.clear();
+            });
+            handle.spawn(async move {
+                let mut ignored = ignored_paths.lock().await;
+                ignored.clear();
+            });
+        }
+        // If we're not in an async context, the structures will be cleaned up
+        // when the Arc is dropped, which is acceptable
     }
 }
 
