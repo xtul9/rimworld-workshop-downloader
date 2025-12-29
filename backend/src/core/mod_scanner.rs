@@ -200,6 +200,80 @@ pub fn query_mod_info(mod_path: &Path) -> Result<Option<ModInfo>, Box<dyn std::e
     }
 }
 
+/// Create a WorkshopFileDetails struct with default values
+/// Used when creating BaseMod from local mod folders
+pub fn create_workshop_file_details(mod_id: &str, title: String, time_updated: i64) -> WorkshopFileDetails {
+    WorkshopFileDetails {
+        publishedfileid: mod_id.to_string(),
+        result: 1,
+        creator: String::new(),
+        creator_app_id: 294100,
+        consumer_app_id: 294100,
+        filename: String::new(),
+        file_size: 0,
+        file_url: String::new(),
+        hcontent_file: String::new(),
+        preview_url: String::new(),
+        hcontent_preview: String::new(),
+        title,
+        description: String::new(),
+        time_updated,
+        time_created: time_updated,
+        visibility: 0,
+        flags: 0,
+        workshop_file_url: String::new(),
+        workshop_accepted: false,
+        show_subscribe_all: false,
+        num_comments_developer: 0,
+        num_comments_public: 0,
+        banned: false,
+        ban_reason: String::new(),
+        banner: String::new(),
+        can_be_deleted: false,
+        app_name: String::new(),
+        file_type: 0,
+        can_subscribe: false,
+        subscriptions: 0,
+        favorited: 0,
+        followers: 0,
+        lifetime_subscriptions: 0,
+        lifetime_favorited: 0,
+        lifetime_followers: 0,
+        lifetime_playtime: String::new(),
+        lifetime_playtime_sessions: String::new(),
+        views: 0,
+        num_children: 0,
+        num_reports: 0,
+        tags: vec![],
+    }
+}
+
+/// Create a BaseMod from a folder path
+/// This is a helper function to reduce code duplication
+pub fn create_base_mod_from_path(
+    mod_id: String,
+    folder_path: &Path,
+    details: Option<WorkshopFileDetails>,
+    is_non_steam: bool,
+) -> BaseMod {
+    let folder_name = folder_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|s| s.to_string());
+    
+    let preview_image_path = find_preview_image(folder_path);
+    
+    BaseMod {
+        mod_id,
+        mod_path: folder_path.to_string_lossy().to_string(),
+        folder: folder_name,
+        details,
+        updated: None,
+        non_steam_mod: is_non_steam,
+        preview_image_path,
+    }
+}
+
 /// Find preview image (preview.png) in About folder (case insensitive)
 /// Returns the path to the preview image if found, None otherwise
 pub fn find_preview_image(mod_path: &Path) -> Option<String> {
@@ -224,7 +298,6 @@ pub fn find_preview_image(mod_path: &Path) -> Option<String> {
         if file_name_str == "preview.png" {
             // Found it! Return the full path as a string
             if let Some(path_str) = entry.path().to_str() {
-                eprintln!("[ModScanner] Found preview image for mod at: {}", path_str);
                 return Some(path_str.to_string());
             }
         }
@@ -441,11 +514,6 @@ pub async fn query_mods_for_updates(
                     .map(|s| s.to_string());
                 
                 let preview_image_path = find_preview_image(&folder_path);
-                if preview_image_path.is_some() {
-                    eprintln!("[ModScanner] Preview image found for mod {}: {:?}", info.mod_id, preview_image_path);
-                } else {
-                    eprintln!("[ModScanner] No preview image found for mod {} at {:?}", info.mod_id, folder_path);
-                }
                 
                 BaseMod {
                     mod_id: info.mod_id.clone(),
@@ -676,11 +744,6 @@ pub async fn list_installed_mods_fast(
                     .map(|s| s.to_string());
                 
                 let preview_image_path = find_preview_image(&folder_path);
-                if preview_image_path.is_some() {
-                    eprintln!("[ModScanner] Preview image found for mod {}: {:?}", info.mod_id, preview_image_path);
-                } else {
-                    eprintln!("[ModScanner] No preview image found for mod {} at {:?}", info.mod_id, folder_path);
-                }
                 
                 BaseMod {
                     mod_id: info.mod_id.clone(),

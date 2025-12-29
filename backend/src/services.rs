@@ -1,13 +1,14 @@
 // Common services and utilities for commands
 
 use std::path::{Path, PathBuf};
-use crate::core::{SteamApi, Downloader};
+use crate::core::{SteamApi, Downloader, mod_watcher::ModWatcher};
 use std::sync::{Arc, OnceLock};
 use tokio::sync::Mutex;
 
 // Shared instances for stateful services
 static STEAM_API: OnceLock<Arc<Mutex<SteamApi>>> = OnceLock::new();
 static DOWNLOADER: OnceLock<Arc<Mutex<Downloader>>> = OnceLock::new();
+static MOD_WATCHER: OnceLock<Arc<Mutex<ModWatcher>>> = OnceLock::new();
 
 /// Get or initialize the shared SteamApi instance
 pub fn get_steam_api() -> Arc<Mutex<SteamApi>> {
@@ -20,6 +21,13 @@ pub fn get_steam_api() -> Arc<Mutex<SteamApi>> {
 pub fn get_downloader() -> Arc<Mutex<Downloader>> {
     DOWNLOADER.get_or_init(|| {
         Arc::new(Mutex::new(Downloader::new(None)))
+    }).clone()
+}
+
+/// Get or initialize the shared ModWatcher instance
+pub fn get_mod_watcher() -> Arc<Mutex<ModWatcher>> {
+    MOD_WATCHER.get_or_init(|| {
+        Arc::new(Mutex::new(ModWatcher::new()))
     }).clone()
 }
 
@@ -53,6 +61,81 @@ pub fn get_mods_path_from_mod_path(mod_path: &Path) -> Result<PathBuf, String> {
         .parent()
         .ok_or_else(|| "Cannot get mods path from mod path".to_string())
         .map(|p| p.to_path_buf())
+}
+
+/// Canonicalize a path, falling back to original path if canonicalization fails
+pub fn canonicalize_path_or_fallback(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// Convert Path to String (using to_string_lossy)
+pub fn path_to_string(path: &Path) -> String {
+    path.to_string_lossy().to_string()
+}
+
+/// Ignore a path in mod watcher (helper function to reduce duplication)
+pub async fn ignore_path_in_watcher(path: PathBuf) {
+    let watcher = get_mod_watcher();
+    let guard = watcher.lock().await;
+    guard.ignore_path(path);
+}
+
+/// Stop ignoring a path in mod watcher (helper function to reduce duplication)
+pub async fn unignore_path_in_watcher(path: PathBuf) {
+    let watcher = get_mod_watcher();
+    let guard = watcher.lock().await;
+    guard.unignore_path(path);
+}
+
+/// RAII guard that automatically unignores a path when dropped
+/// This ensures that paths are always unignored even if an error occurs
+pub struct WatcherIgnoreGuard {
+    ignored_paths: Option<Arc<std::sync::RwLock<std::collections::HashSet<PathBuf>>>>,
+    path: Option<PathBuf>,
+}
+
+impl WatcherIgnoreGuard {
+    /// Create a new guard that will unignore the path when dropped
+    /// This is async because it needs to access the watcher which is behind an async Mutex
+    /// The path is canonicalized immediately (while it still exists) to ensure consistency
+    pub async fn new(path: PathBuf) -> Self {
+        // Canonicalize the path immediately while it still exists
+        // This ensures we store the same canonical path that was added to the ignored set
+        let canonical_path = canonicalize_path_or_fallback(&path);
+        
+        // Get direct access to ignored_paths for synchronous Drop
+        let watcher = get_mod_watcher();
+        let guard = watcher.lock().await;
+        let ignored_paths = guard.ignored_paths();
+        drop(guard);
+        
+        Self {
+            ignored_paths: Some(ignored_paths),
+            path: Some(canonical_path),
+        }
+    }
+
+    /// Manually unignore the path and consume the guard
+    /// This prevents the Drop from running
+    pub async fn unignore(mut self) {
+        if let (Some(ignored_paths), Some(canonical_path)) = (self.ignored_paths.take(), self.path.take()) {
+            // Use the stored canonical path directly without re-canonicalizing
+            // This ensures we remove the exact same path that was added, even if
+            // the path didn't exist when it was ignored (and canonicalization failed)
+            let mut ignored = ignored_paths.write().unwrap();
+            ignored.remove(&canonical_path);
+        }
+    }
+}
+
+impl Drop for WatcherIgnoreGuard {
+    fn drop(&mut self) {
+        // The path stored is already canonicalized (from new()), so we can use it directly
+        if let (Some(ignored_paths), Some(canonical_path)) = (self.ignored_paths.take(), self.path.take()) {
+            let mut ignored = ignored_paths.write().unwrap();
+            ignored.remove(&canonical_path);
+        }
+    }
 }
 
 /// Find all mod folders with the given mod ID
@@ -154,37 +237,30 @@ pub async fn fetch_mod_times_updated(mod_ids: &[String]) -> std::collections::Ha
     mod_id_to_time_updated
 }
 
-/// Write .ignoredupdate file for a mod folder
-pub async fn write_ignore_update_file(folder_path: PathBuf, time_updated: i64) {
+/// Write a timestamp file in mod's About folder (shared implementation for .ignoredupdate and .lastupdated)
+async fn write_mod_timestamp_file(folder_path: PathBuf, filename: String, timestamp: i64) {
     let about_path = folder_path.join("About");
-    let ignore_update_path = about_path.join(".ignoredupdate");
-    let time_str = time_updated.to_string();
+    let file_path = about_path.join(&filename);
+    let time_str = timestamp.to_string();
     
     tokio::task::spawn_blocking(move || {
         if let Err(e) = std::fs::create_dir_all(&about_path) {
             eprintln!("Failed to create About directory: {}", e);
             return;
         }
-        if let Err(e) = std::fs::write(&ignore_update_path, time_str) {
-            eprintln!("Failed to write .ignoredupdate file: {}", e);
+        if let Err(e) = std::fs::write(&file_path, time_str) {
+            eprintln!("Failed to write {} file: {}", filename, e);
         }
     }).await.ok();
 }
 
+/// Write .ignoredupdate file for a mod folder
+pub async fn write_ignore_update_file(folder_path: PathBuf, time_updated: i64) {
+    write_mod_timestamp_file(folder_path, ".ignoredupdate".to_string(), time_updated).await;
+}
+
 /// Write .lastupdated file for a mod folder
 pub async fn write_last_updated_file(folder_path: PathBuf, time_updated: i64) {
-    let about_path = folder_path.join("About");
-    let last_updated_path = about_path.join(".lastupdated");
-    let time_str = time_updated.to_string();
-    
-    tokio::task::spawn_blocking(move || {
-        if let Err(e) = std::fs::create_dir_all(&about_path) {
-            eprintln!("Failed to create About directory: {}", e);
-            return;
-        }
-        if let Err(e) = std::fs::write(&last_updated_path, time_str) {
-            eprintln!("Failed to write .lastupdated file: {}", e);
-        }
-    }).await.ok();
+    write_mod_timestamp_file(folder_path, ".lastupdated".to_string(), time_updated).await;
 }
 

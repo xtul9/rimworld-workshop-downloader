@@ -201,14 +201,19 @@ impl ModUpdater {
             }
         }
 
-        // Remove existing mod folder if it exists (async)
+        // Ignore this path in mod watcher during update operation
+        use crate::services::{ignore_path_in_watcher, WatcherIgnoreGuard};
+        ignore_path_in_watcher(mod_destination_path.clone()).await;
+        let _guard = WatcherIgnoreGuard::new(mod_destination_path.clone()).await;
+
+        // Give mod watcher a moment to close any open file handles
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+
+        // Remove existing mod folder if it exists (async with retry)
+        // Use retry logic to handle cases where mod watcher or other processes have files open
         if mod_destination_path.exists() {
-            let path_to_remove = mod_destination_path.clone();
-            tokio::task::spawn_blocking(move || {
-                fs::remove_dir_all(&path_to_remove)
-            }).await
-            .map_err(|e| format!("Task panicked: {:?}", e))?
-            .map_err(|e| format!("Failed to remove existing mod folder: {}", e))?;
+            Self::remove_dir_with_retry(&mod_destination_path, 3, 200).await
+                .map_err(|e| format!("Failed to remove existing mod folder: {}", e))?;
         }
 
         // Copy mod from download folder to game mods folder
@@ -242,6 +247,10 @@ impl ModUpdater {
         // Ensure PublishedFileId.txt exists after copying
         Self::ensure_published_file_id(&mod_destination_path, mod_id).await
             .map_err(|e| format!("Failed to create PublishedFileId.txt: {}", e))?;
+
+        // Manually unignore the path (this consumes the guard and prevents Drop from running)
+        // If we reach here, the operation was successful
+        _guard.unignore().await;
 
         eprintln!("[ModUpdater] Mod {} copied successfully to {:?}", mod_id, mod_destination_path);
 
@@ -393,6 +402,46 @@ impl ModUpdater {
         }
         
         None
+    }
+
+    /// Remove directory with retry logic and delay to handle file locks
+    /// This is useful when mod watcher or other processes might have files open
+    async fn remove_dir_with_retry(path: &Path, max_retries: u32, delay_ms: u64) -> Result<(), String> {
+        let path = path.to_path_buf();
+        
+        for attempt in 1..=max_retries {
+            let result = tokio::task::spawn_blocking({
+                let path = path.clone();
+                move || {
+                    if path.exists() {
+                        fs::remove_dir_all(&path)
+                    } else {
+                        Ok(())
+                    }
+                }
+            }).await
+            .map_err(|e| format!("Task panicked: {:?}", e))?;
+            
+            match result {
+                Ok(()) => {
+                    if attempt > 1 {
+                        eprintln!("[ModUpdater] Successfully removed directory after {} attempt(s): {:?}", attempt, path);
+                    }
+                    return Ok(());
+                }
+                Err(e) => {
+                    if attempt < max_retries {
+                        eprintln!("[ModUpdater] Attempt {} failed to remove directory {:?}: {}. Retrying in {}ms...", 
+                            attempt, path, e, delay_ms);
+                        tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+                    } else {
+                        return Err(format!("Failed to remove directory after {} attempts: {}", max_retries, e));
+                    }
+                }
+            }
+        }
+        
+        Err(format!("Failed to remove directory after {} attempts", max_retries))
     }
 
     /// Verify that a mod is complete before copying
