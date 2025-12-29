@@ -39,6 +39,7 @@ pub fn run() {
             commands::get_collection_details,
             commands::get_collection_details_batch,
             commands::download_mod,
+            commands::continue_download_with_decision,
             commands::start_mod_watcher,
             commands::stop_mod_watcher,
         ])

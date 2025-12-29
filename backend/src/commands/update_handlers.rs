@@ -133,6 +133,7 @@ pub async fn update_mods(
                         backup_mods,
                         backup_dir_clone.as_deref(),
                         mod_title.as_deref(),
+                        None, // force_overwrite_corrupted - None means ask user if corrupted mod found
                     ).await;
             
             match mod_path_result {

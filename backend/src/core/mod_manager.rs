@@ -51,6 +51,7 @@ impl ModUpdater {
         create_backup: bool,
         backup_directory: Option<&Path>,
         mod_title: Option<&str>,
+        force_overwrite_corrupted: Option<bool>,
     ) -> Result<PathBuf, String> {
         // Use existing folder name if provided, otherwise find existing folder with same mod ID, otherwise use mod title
         let folder_name = if let Some(name) = existing_folder_name {
@@ -84,7 +85,42 @@ impl ModUpdater {
                     // Check if folder with this name already exists
                     let mut proposed_path = mods_path.join(&folder_name);
                     if proposed_path.exists() && proposed_path.is_dir() {
-                        let existing_package_id = Self::get_package_id(&proposed_path);
+                        // Check if existing mod is corrupted
+                        if Self::is_mod_corrupted(&proposed_path) {
+                            // If force_overwrite_corrupted is Some(true), overwrite
+                            // If force_overwrite_corrupted is Some(false), rename
+                            // If force_overwrite_corrupted is None, return error to ask user
+                            match force_overwrite_corrupted {
+                                Some(true) => {
+                                    // Force overwrite - continue with same folder name
+                                    eprintln!("[ModUpdater] Force overwriting corrupted mod at {:?}", proposed_path);
+                                }
+                                Some(false) => {
+                                    // Force rename - change folder name
+                                    let base_name = folder_name.clone();
+                                    loop {
+                                        folder_name = format!("{}_", folder_name);
+                                        proposed_path = mods_path.join(&folder_name);
+                                        if !proposed_path.exists() {
+                                            break;
+                                        }
+                                        // Safety limit
+                                        if folder_name.len() > base_name.len() + 50 {
+                                            folder_name = format!("{}_{}", base_name, mod_id);
+                                            break;
+                                        }
+                                    }
+                                    eprintln!("[ModUpdater] Force renaming corrupted mod, using \"{}\" instead", folder_name);
+                                }
+                                None => {
+                                    // Mod is corrupted - return special error to ask user for decision
+                                    return Err(format!("CORRUPTED_MOD_CONFLICT:{}:{}", folder_name, mod_id));
+                                }
+                            }
+                        }
+                        
+                        if !Self::is_mod_corrupted(&proposed_path) {
+                            let existing_package_id = Self::get_package_id(&proposed_path);
                         
                         match (source_package_id.as_ref(), existing_package_id.as_ref()) {
                             // Both have packageId - compare them
@@ -164,6 +200,7 @@ impl ModUpdater {
                                     }
                                 }
                             }
+                        }
                         }
                     }
                     
@@ -473,6 +510,29 @@ impl ModUpdater {
         
         true
     }
+
+    /// Check if a mod is corrupted (missing About folder or About.xml)
+    /// Returns true if mod is corrupted, false otherwise
+    pub fn is_mod_corrupted(mod_path: &Path) -> bool {
+        // Check if mod folder exists and is a directory
+        if !mod_path.exists() || !mod_path.is_dir() {
+            return false; // Not a mod folder at all
+        }
+        
+        // Check for About folder
+        let about_path = mod_path.join("About");
+        if !about_path.exists() || !about_path.is_dir() {
+            return true; // Missing About folder - corrupted
+        }
+        
+        // Check for About.xml
+        let about_xml_path = about_path.join("About.xml");
+        if !about_xml_path.exists() {
+            return true; // Missing About.xml - corrupted
+        }
+        
+        false // Mod appears to be valid
+    }
 }
 
 /// Recursively copy directory (async version using spawn_blocking)
@@ -663,6 +723,7 @@ mod tests {
             false,
             None,
             None,
+            None, // force_overwrite_corrupted
         ).await.unwrap();
         
         assert!(result.exists());
@@ -693,6 +754,7 @@ mod tests {
             false,
             None,
             None,
+            None, // force_overwrite_corrupted
         ).await.unwrap();
         
         assert!(result.exists());
@@ -730,6 +792,7 @@ mod tests {
             true,
             Some(&backup_dir),
             None,
+            None, // force_overwrite_corrupted
         ).await.unwrap();
         
         assert!(result.exists());

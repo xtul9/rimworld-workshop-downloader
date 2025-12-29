@@ -339,6 +339,52 @@ export default function DownloadTab() {
       
       setDownloadedMods(prev => [...prev, mod]);
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      
+      // Check if this is a corrupted mod conflict error
+      if (errorMessage.startsWith("CORRUPTED_MOD_CONFLICT:")) {
+        // Parse the error: CORRUPTED_MOD_CONFLICT:folderName:modId:modTitle
+        const parts = errorMessage.split(":");
+        if (parts.length >= 4) {
+          const folderName = parts[1];
+          const modId = parts[2];
+          const modTitle = parts.slice(3).join(":"); // In case title contains ":"
+          
+          // Show modal to ask user for decision
+          return new Promise<void>((resolve, reject) => {
+            openModal("corrupted-mod-conflict", {
+              folderName,
+              modId,
+              modTitle: modTitle || details.title || modId,
+              onResolve: async (overwrite: boolean) => {
+                try {
+                  const result = await invoke<{ modId: string; modPath: string }>("continue_download_with_decision", {
+                    modId: modId,
+                    modsPath: modsPath,
+                    overwrite: overwrite
+                  });
+                  
+                  // Convert result to BaseMod format
+                  const mod: BaseMod = {
+                    modId: result.modId,
+                    modPath: result.modPath,
+                    folder: folderName,
+                    details: details,
+                    updated: undefined
+                  };
+                  
+                  setDownloadedMods(prev => [...prev, mod]);
+                  resolve();
+                } catch (err) {
+                  console.error("Failed to continue download:", err);
+                  reject(err);
+                }
+              }
+            });
+          });
+        }
+      }
+      
       console.error("Failed to download mod:", error);
       throw error;
     }
