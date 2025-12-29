@@ -97,7 +97,12 @@ pub struct WatcherIgnoreGuard {
 impl WatcherIgnoreGuard {
     /// Create a new guard that will unignore the path when dropped
     /// This is async because it needs to access the watcher which is behind an async Mutex
+    /// The path is canonicalized immediately (while it still exists) to ensure consistency
     pub async fn new(path: PathBuf) -> Self {
+        // Canonicalize the path immediately while it still exists
+        // This ensures we store the same canonical path that was added to the ignored set
+        let canonical_path = canonicalize_path_or_fallback(&path);
+        
         // Get direct access to ignored_paths for synchronous Drop
         let watcher = get_mod_watcher();
         let guard = watcher.lock().await;
@@ -106,7 +111,7 @@ impl WatcherIgnoreGuard {
         
         Self {
             ignored_paths: Some(ignored_paths),
-            path: Some(path),
+            path: Some(canonical_path),
         }
     }
 
@@ -114,6 +119,7 @@ impl WatcherIgnoreGuard {
     /// This prevents the Drop from running
     pub async fn unignore(mut self) {
         if let Some(path) = self.path.take() {
+            // Use the canonicalized path that was stored
             unignore_path_in_watcher(path).await;
             // Clear ignored_paths to prevent Drop from running
             self.ignored_paths = None;
@@ -123,11 +129,9 @@ impl WatcherIgnoreGuard {
 
 impl Drop for WatcherIgnoreGuard {
     fn drop(&mut self) {
-        // Drop is now fully synchronous - ignored_paths uses RwLock which is synchronous
-        if let (Some(ignored_paths), Some(path)) = (self.ignored_paths.take(), self.path.take()) {
+        // The path stored is already canonicalized (from new()), so we can use it directly
+        if let (Some(ignored_paths), Some(canonical_path)) = (self.ignored_paths.take(), self.path.take()) {
             let mut ignored = ignored_paths.write().unwrap();
-            use crate::services::canonicalize_path_or_fallback;
-            let canonical_path = canonicalize_path_or_fallback(&path);
             ignored.remove(&canonical_path);
         }
     }
