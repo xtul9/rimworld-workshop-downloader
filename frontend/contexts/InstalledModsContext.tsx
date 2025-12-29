@@ -309,33 +309,9 @@ export function InstalledModsProvider({ children }: { children: ReactNode }) {
       unlistenState?.();
       unlistenUpdated?.();
       unlistenAdded?.();
-      unlistenRemoved?.();
-      
-      // Note: We don't stop mod watcher here because it's managed by the separate useEffect
-      // that depends only on modsPath. Stopping it here would break watcher when sort settings change.
+      unlistenRemoved?.();      
     };
   }, [settings.modsPath, settings.installedModsSortBy, settings.installedModsSortOrder]);
-  
-  // Restart mod watcher when modsPath changes
-  useEffect(() => {
-    if (settings.modsPath && settings.modsPath.trim().length > 0) {
-      // Stop existing watcher first
-      invoke("stop_mod_watcher")
-        .then(() => {
-          // Start watcher with new path
-          return invoke("start_mod_watcher", { modsPath: settings.modsPath });
-        })
-        .then(() => {
-          console.log("[INSTALLED_MODS] Restarted mod watcher for new path");
-        })
-        .catch((error) => {
-          console.error("[INSTALLED_MODS] Failed to restart mod watcher:", error);
-        });
-    } else {
-      // Stop watcher if modsPath is empty
-      invoke("stop_mod_watcher").catch(console.error);
-    }
-  }, [settings.modsPath]);
 
   const updateMods = async (modsToUpdate: BaseMod[]) => {
     if (modsToUpdate.length === 0) return;

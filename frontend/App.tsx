@@ -10,6 +10,7 @@ import { SettingsProvider, useSettings } from "./contexts/SettingsContext";
 import { ModalProvider, useModal } from "./contexts/ModalContext";
 import { ContextMenuProvider } from "./contexts/ContextMenuContext";
 import { AccessErrorProvider, useAccessError } from "./contexts/AccessErrorContext";
+import { ModWatcherProvider } from "./contexts/ModWatcherContext";
 import RestoreBackupModal from "./components/RestoreBackupModal";
 import ForceUpdateAllModal from "./components/ForceUpdateAllModal";
 import ContextMenu from "./components/ContextMenu";
@@ -151,13 +152,15 @@ function App() {
       <ModalProvider>
         <ContextMenuProvider>
           <AccessErrorProvider>
-            <ModsPathProvider>
-              <ModsProvider>
-                <InstalledModsProvider>
-                  <AppContent />
-                </InstalledModsProvider>
-              </ModsProvider>
-            </ModsPathProvider>
+            <ModWatcherProvider>
+              <ModsPathProvider>
+                <ModsProvider>
+                  <InstalledModsProvider>
+                    <AppContent />
+                  </InstalledModsProvider>
+                </ModsProvider>
+              </ModsPathProvider>
+            </ModWatcherProvider>
           </AccessErrorProvider>
         </ContextMenuProvider>
       </ModalProvider>
