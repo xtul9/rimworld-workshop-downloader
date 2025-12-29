@@ -118,11 +118,12 @@ impl WatcherIgnoreGuard {
     /// Manually unignore the path and consume the guard
     /// This prevents the Drop from running
     pub async fn unignore(mut self) {
-        if let Some(path) = self.path.take() {
-            // Use the canonicalized path that was stored
-            unignore_path_in_watcher(path).await;
-            // Clear ignored_paths to prevent Drop from running
-            self.ignored_paths = None;
+        if let (Some(ignored_paths), Some(canonical_path)) = (self.ignored_paths.take(), self.path.take()) {
+            // Use the stored canonical path directly without re-canonicalizing
+            // This ensures we remove the exact same path that was added, even if
+            // the path didn't exist when it was ignored (and canonicalization failed)
+            let mut ignored = ignored_paths.write().unwrap();
+            ignored.remove(&canonical_path);
         }
     }
 }
