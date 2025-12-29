@@ -124,6 +124,18 @@ pub async fn update_mods(
                 dl.kill_our_processes().await;
             }
             
+            // Wait for all already-spawned installation tasks to complete
+            // This prevents race conditions where mods are installed after cancellation
+            let results: Vec<(String, Result<PathBuf, String>)> = futures::future::join_all(update_handles).await
+                .into_iter()
+                .map(|result: Result<(String, Result<PathBuf, String>), tokio::task::JoinError>| {
+                    result.unwrap_or_else(|e| {
+                        eprintln!("[UPDATE_MODS] Task panicked: {:?}", e);
+                        ("".to_string(), Err(format!("Task panicked: {:?}", e)))
+                    })
+                })
+                .collect();
+            
             // Emit cancellation event for remaining mods
             for mod_id in &mod_ids {
                 if !seen_mod_ids.contains(mod_id) {
@@ -134,8 +146,30 @@ pub async fn update_mods(
                 }
             }
             
-            // Mark all remaining mods as cancelled
+            // Mark all mods as cancelled, but preserve any that completed before cancellation
             let mut cancelled_mods = Vec::new();
+            for (mod_id, result) in results {
+                match result {
+                    Ok(_path) => {
+                        // Mod was successfully updated before cancellation
+                        if let Some(original_mod) = mods_map.get(&mod_id) {
+                            let mut updated_mod = original_mod.clone();
+                            updated_mod.updated = Some(true);
+                            cancelled_mods.push(updated_mod);
+                        }
+                    }
+                    Err(_) => {
+                        // Mark as cancelled
+                        if let Some(original_mod) = mods_map.get(&mod_id) {
+                            let mut cancelled_mod = (*original_mod).clone();
+                            cancelled_mod.updated = Some(false);
+                            cancelled_mods.push(cancelled_mod);
+                        }
+                    }
+                }
+            }
+            
+            // Add mods that were queued but not started
             for mod_id in &mod_ids {
                 if !seen_mod_ids.contains(mod_id) {
                     if let Some(original_mod) = mods_map.get(mod_id) {
