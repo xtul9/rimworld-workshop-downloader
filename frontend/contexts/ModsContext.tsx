@@ -5,7 +5,7 @@ import { BaseMod } from "../types";
 import { useSettings } from "./SettingsContext";
 
 // Simplified state system: each mod has a single state that is managed ONLY by events
-export type ModState = "queued" | "retry-queued" | "downloading" | "installing" | "completed" | "failed" | null;
+export type ModState = "queued" | "retry-queued" | "downloading" | "installing" | "completed" | "failed" | "cancelled" | null;
 
 interface ModsContextType {
   mods: BaseMod[];
@@ -22,6 +22,7 @@ interface ModsContextType {
   isModUpdating: (modId: string) => boolean;
   queryMods: (modsPath: string) => Promise<void>;
   updateMods: (modsToUpdate: BaseMod[]) => Promise<void>;
+  cancelUpdateMods: () => Promise<void>;
   removeMods: (modsToRemove: BaseMod[]) => void;
   ignoreFromList: (modsToIgnore: BaseMod[]) => void;
   ignoreThisUpdate: (modsToIgnore: BaseMod[]) => Promise<void>;
@@ -39,10 +40,10 @@ export function ModsProvider({ children }: { children: ReactNode }) {
   const [hasQueried, setHasQueried] = useState(false);
   const { updateSetting, settings } = useSettings();
   
-  // Computed: isUpdating is true if any mod has an active state (not null, not "completed", not "failed")
+  // Computed: isUpdating is true if any mod has an active state (not null, not "completed", not "failed", not "cancelled")
   const isUpdating = useMemo(() => {
     for (const state of modStates.values()) {
-      if (state !== null && state !== "completed" && state !== "failed") {
+      if (state !== null && state !== "completed" && state !== "failed" && state !== "cancelled") {
         return true;
       }
     }
@@ -52,7 +53,7 @@ export function ModsProvider({ children }: { children: ReactNode }) {
   // Computed: isModUpdating returns true if specific mod is updating
   const isModUpdating = (modId: string) => {
     const state = modStates.get(modId);
-    return state !== null && state !== "completed" && state !== "failed";
+    return state !== null && state !== "completed" && state !== "failed" && state !== "cancelled";
   };
 
   // Listen for real-time download and update events
@@ -60,6 +61,7 @@ export function ModsProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let unlistenState: (() => void) | undefined;
     let unlistenUpdated: (() => void) | undefined;
+    let unlistenCancelled: (() => void) | undefined;
 
     const setupListeners = async () => {
       // Listen for mod-state events - this is the PRIMARY event for all state changes
@@ -71,7 +73,7 @@ export function ModsProvider({ children }: { children: ReactNode }) {
           const newMap = new Map(prev);
           // Map backend states to frontend states
           if (state === "queued" || state === "retry-queued" || state === "downloading" || 
-              state === "installing" || state === "failed") {
+              state === "installing" || state === "failed" || state === "cancelled") {
             newMap.set(modId, state as ModState);
           } else if (state === "completed") {
             // Backend doesn't emit "completed" yet, but we'll handle it if it does
@@ -99,6 +101,34 @@ export function ModsProvider({ children }: { children: ReactNode }) {
             return newMap;
           });
         }
+      });
+
+      // Listen for update-cancelled events
+      unlistenCancelled = await listen("update-cancelled", () => {
+        console.log("[EVENT] Update cancelled");
+        // Mark all mods with active states as cancelled, then clear them after a short delay
+        setModStates(prev => {
+          const newMap = new Map(prev);
+          for (const [modId, state] of prev.entries()) {
+            if (state !== null && state !== "completed" && state !== "failed") {
+              newMap.set(modId, "cancelled");
+            }
+          }
+          return newMap;
+        });
+        
+        // Clear cancelled states after a short delay to restore normal view
+        setTimeout(() => {
+          setModStates(prev => {
+            const newMap = new Map(prev);
+            for (const [modId, state] of prev.entries()) {
+              if (state === "cancelled") {
+                newMap.delete(modId);
+              }
+            }
+            return newMap;
+          });
+        }, 500);
       });
 
       // Listen for mod-updated events - this marks the end of installation
@@ -169,6 +199,7 @@ export function ModsProvider({ children }: { children: ReactNode }) {
     return () => {
       unlistenState?.();
       unlistenUpdated?.();
+      unlistenCancelled?.();
     };
   }, []);
 
@@ -309,6 +340,17 @@ export function ModsProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  const cancelUpdateMods = async () => {
+    try {
+      await invoke("cancel_update_mods");
+      console.log("[UPDATE] Cancellation requested");
+    } catch (error) {
+      console.error("Failed to cancel update:", error);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      setError(`Error cancelling update: ${errorMessage}`);
+    }
+  };
+
   return (
     <ModsContext.Provider
       value={{
@@ -323,6 +365,7 @@ export function ModsProvider({ children }: { children: ReactNode }) {
         isModUpdating,
         queryMods,
         updateMods,
+        cancelUpdateMods,
         removeMods,
         ignoreFromList,
         ignoreThisUpdate,

@@ -14,6 +14,7 @@ import { ModWatcherProvider } from "./contexts/ModWatcherContext";
 import RestoreBackupModal from "./components/RestoreBackupModal";
 import ForceUpdateAllModal from "./components/ForceUpdateAllModal";
 import MessageModal from "./components/MessageModal";
+import CorruptedModConflictModal from "./components/CorruptedModConflictModal";
 import ContextMenu from "./components/ContextMenu";
 import AccessErrorBanner from "./components/AccessErrorBanner";
 import { Theme } from "./utils/settingsStorage";
@@ -146,6 +147,15 @@ function AppContent() {
           title={modalData.title}
           message={modalData.message}
           type={modalData.type}
+        />
+      )}
+      {modalType === "corrupted-mod-conflict" && modalData && (
+        <CorruptedModConflictModal
+          folderName={modalData.folderName}
+          modId={modalData.modId}
+          modTitle={modalData.modTitle}
+          onResolve={modalData.onResolve}
+          onReject={modalData.onReject}
         />
       )}
 

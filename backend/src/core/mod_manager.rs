@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::fs;
 use crate::core::mod_scanner::query_mod_id;
+use crate::services::{ignore_path_in_watcher, WatcherIgnoreGuard, is_update_cancelled};
 use quick_xml::events::Event;
 use quick_xml::Reader;
 
@@ -51,6 +52,7 @@ impl ModUpdater {
         create_backup: bool,
         backup_directory: Option<&Path>,
         mod_title: Option<&str>,
+        force_overwrite_corrupted: Option<bool>,
     ) -> Result<PathBuf, String> {
         // Use existing folder name if provided, otherwise find existing folder with same mod ID, otherwise use mod title
         let folder_name = if let Some(name) = existing_folder_name {
@@ -84,7 +86,71 @@ impl ModUpdater {
                     // Check if folder with this name already exists
                     let mut proposed_path = mods_path.join(&folder_name);
                     if proposed_path.exists() && proposed_path.is_dir() {
-                        let existing_package_id = Self::get_package_id(&proposed_path);
+                        // Check if existing mod is corrupted
+                        if Self::is_mod_corrupted(&proposed_path) {
+                            // If force_overwrite_corrupted is Some(true), overwrite
+                            // If force_overwrite_corrupted is Some(false), rename
+                            // If force_overwrite_corrupted is None, return error to ask user
+                            match force_overwrite_corrupted {
+                                Some(true) => {
+                                    // Force overwrite - continue with same folder name
+                                    eprintln!("[ModUpdater] Force overwriting corrupted mod at {:?}", proposed_path);
+                                }
+                                Some(false) => {
+                                    // Force rename - change folder name
+                                    let base_name = folder_name.clone();
+                                    let mut fallback_used = false;
+                                    loop {
+                                        folder_name = format!("{}_", folder_name);
+                                        proposed_path = mods_path.join(&folder_name);
+                                        if !proposed_path.exists() {
+                                            break;
+                                        }
+                                        // Safety limit
+                                        if folder_name.len() > base_name.len() + 50 {
+                                            if !fallback_used {
+                                                // First fallback: use mod_id
+                                                folder_name = format!("{}_{}", base_name, mod_id);
+                                                proposed_path = mods_path.join(&folder_name);
+                                                fallback_used = true;
+                                                // Check if fallback path is unique
+                                                if !proposed_path.exists() {
+                                                    break;
+                                                }
+                                                // If fallback exists, continue with underscores
+                                                continue;
+                                            } else {
+                                                // Second fallback: use timestamp to guarantee uniqueness
+                                                // This ensures we never overwrite when user chose "Rename"
+                                                let timestamp = std::time::SystemTime::now()
+                                                    .duration_since(std::time::UNIX_EPOCH)
+                                                    .unwrap()
+                                                    .as_secs();
+                                                folder_name = format!("{}_{}_{}", base_name, mod_id, timestamp);
+                                                proposed_path = mods_path.join(&folder_name);
+                                                // Timestamp should guarantee uniqueness, but check anyway
+                                                if !proposed_path.exists() {
+                                                    break;
+                                                }
+                                                // If even timestamp exists (extremely unlikely), add one more underscore
+                                                folder_name = format!("{}_{}_{}_", base_name, mod_id, timestamp);
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    eprintln!("[ModUpdater] Force renaming corrupted mod, using \"{}\" instead", folder_name);
+                                }
+                                None => {
+                                    // Mod is corrupted - return special error to ask user for decision
+                                    return Err(format!("CORRUPTED_MOD_CONFLICT:{}:{}", folder_name, mod_id));
+                                }
+                            }
+                        }
+                        
+                        // Only check package ID if path exists and is not corrupted
+                        // (when force_overwrite_corrupted is Some(false), proposed_path may not exist)
+                        if proposed_path.exists() && !Self::is_mod_corrupted(&proposed_path) {
+                            let existing_package_id = Self::get_package_id(&proposed_path);
                         
                         match (source_package_id.as_ref(), existing_package_id.as_ref()) {
                             // Both have packageId - compare them
@@ -109,6 +175,23 @@ impl ModUpdater {
                                         // Safety limit - if we've added too many underscores, use mod_id
                                         if folder_name.len() > base_name.len() + 50 {
                                             folder_name = format!("{}_{}", base_name, mod_id);
+                                            proposed_path = mods_path.join(&folder_name);
+                                            // Check if fallback path exists and has same packageId (can overwrite)
+                                            if let Some(existing_id_check) = Self::get_package_id(&proposed_path) {
+                                                if existing_id_check == *src_id {
+                                                    // Same packageId - can overwrite
+                                                    break;
+                                                }
+                                            } else if !proposed_path.exists() {
+                                                // Path doesn't exist - unique name found
+                                                break;
+                                            }
+                                            // Fallback path exists with different packageId - use timestamp to guarantee uniqueness
+                                            let timestamp = std::time::SystemTime::now()
+                                                .duration_since(std::time::UNIX_EPOCH)
+                                                .unwrap()
+                                                .as_secs();
+                                            folder_name = format!("{}_{}_{}", base_name, mod_id, timestamp);
                                             break;
                                         }
                                     }
@@ -129,6 +212,17 @@ impl ModUpdater {
                                     // Safety limit
                                     if folder_name.len() > base_name.len() + 50 {
                                         folder_name = format!("{}_{}", base_name, mod_id);
+                                        proposed_path = mods_path.join(&folder_name);
+                                        // Check if fallback path is unique
+                                        if !proposed_path.exists() {
+                                            break;
+                                        }
+                                        // Fallback path exists - use timestamp to guarantee uniqueness
+                                        let timestamp = std::time::SystemTime::now()
+                                            .duration_since(std::time::UNIX_EPOCH)
+                                            .unwrap()
+                                            .as_secs();
+                                        folder_name = format!("{}_{}_{}", base_name, mod_id, timestamp);
                                         break;
                                     }
                                 }
@@ -147,6 +241,17 @@ impl ModUpdater {
                                     // Safety limit
                                     if folder_name.len() > base_name.len() + 50 {
                                         folder_name = format!("{}_{}", base_name, mod_id);
+                                        proposed_path = mods_path.join(&folder_name);
+                                        // Check if fallback path is unique
+                                        if !proposed_path.exists() {
+                                            break;
+                                        }
+                                        // Fallback path exists - use timestamp to guarantee uniqueness
+                                        let timestamp = std::time::SystemTime::now()
+                                            .duration_since(std::time::UNIX_EPOCH)
+                                            .unwrap()
+                                            .as_secs();
+                                        folder_name = format!("{}_{}_{}", base_name, mod_id, timestamp);
                                         break;
                                     }
                                 }
@@ -165,6 +270,7 @@ impl ModUpdater {
                                 }
                             }
                         }
+                        }
                     }
                     
                     eprintln!("[ModUpdater] No existing folder found for mod {}, will use \"{}\" as folder name", mod_id, folder_name);
@@ -181,6 +287,11 @@ impl ModUpdater {
 
         // Create backup if requested
         if create_backup {
+            // Check if update was cancelled before starting backup
+            if is_update_cancelled() {
+                return Err("Update cancelled by user".to_string());
+            }
+            
             if let Some(backup_dir) = backup_directory {
                 fs::create_dir_all(backup_dir)
                     .map_err(|e| format!("Failed to create backup directory: {}", e))?;
@@ -202,7 +313,6 @@ impl ModUpdater {
         }
 
         // Ignore this path in mod watcher during update operation
-        use crate::services::{ignore_path_in_watcher, WatcherIgnoreGuard};
         ignore_path_in_watcher(mod_destination_path.clone()).await;
         let _guard = WatcherIgnoreGuard::new(mod_destination_path.clone()).await;
 
@@ -212,6 +322,11 @@ impl ModUpdater {
         // Remove existing mod folder if it exists (async with retry)
         // Use retry logic to handle cases where mod watcher or other processes have files open
         if mod_destination_path.exists() {
+            // Check if update was cancelled before removing existing folder
+            if is_update_cancelled() {
+                return Err("Update cancelled by user".to_string());
+            }
+            
             Self::remove_dir_with_retry(&mod_destination_path, 3, 200).await
                 .map_err(|e| format!("Failed to remove existing mod folder: {}", e))?;
         }
@@ -233,6 +348,11 @@ impl ModUpdater {
         // Verify source mod is complete before copying
         if !Self::verify_mod_complete(&source_path) {
             return Err(format!("Source mod at {:?} appears incomplete or invalid. Refusing to copy.", source_path));
+        }
+
+        // Check if update was cancelled before starting copy operation
+        if is_update_cancelled() {
+            return Err("Update cancelled by user".to_string());
         }
 
         eprintln!("[ModUpdater] Copying mod from {:?} to {:?}", source_path, mod_destination_path);
@@ -473,6 +593,29 @@ impl ModUpdater {
         
         true
     }
+
+    /// Check if a mod is corrupted (missing About folder or About.xml)
+    /// Returns true if mod is corrupted, false otherwise
+    pub fn is_mod_corrupted(mod_path: &Path) -> bool {
+        // Check if mod folder exists and is a directory
+        if !mod_path.exists() || !mod_path.is_dir() {
+            return false; // Not a mod folder at all
+        }
+        
+        // Check for About folder
+        let about_path = mod_path.join("About");
+        if !about_path.exists() || !about_path.is_dir() {
+            return true; // Missing About folder - corrupted
+        }
+        
+        // Check for About.xml
+        let about_xml_path = about_path.join("About.xml");
+        if !about_xml_path.exists() {
+            return true; // Missing About.xml - corrupted
+        }
+        
+        false // Mod appears to be valid
+    }
 }
 
 /// Recursively copy directory (async version using spawn_blocking)
@@ -663,6 +806,7 @@ mod tests {
             false,
             None,
             None,
+            None, // force_overwrite_corrupted
         ).await.unwrap();
         
         assert!(result.exists());
@@ -693,6 +837,7 @@ mod tests {
             false,
             None,
             None,
+            None, // force_overwrite_corrupted
         ).await.unwrap();
         
         assert!(result.exists());
@@ -730,6 +875,7 @@ mod tests {
             true,
             Some(&backup_dir),
             None,
+            None, // force_overwrite_corrupted
         ).await.unwrap();
         
         assert!(result.exists());

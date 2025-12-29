@@ -21,6 +21,7 @@ export default function InstalledModsTab() {
     hasLoaded,
     loadInstalledMods,
     updateMods,
+    cancelUpdateMods,
   } = useInstalledMods();
   const { formatSize } = useFormatting();
   const { permissions } = useAccessError();
@@ -71,7 +72,7 @@ export default function InstalledModsTab() {
     }
   }, [hasLoaded, isLoading, modsPath, loadInstalledMods]);
 
-  const handleForceUpdateAll = () => {
+  const handleForceUpdateAll = async () => {
     if (filteredAndSortedMods.length === 0) return;
     
     if (!permissions.canWrite) {
@@ -96,14 +97,23 @@ export default function InstalledModsTab() {
     const totalSize = modsToUpdate.reduce((sum, m) => sum + (m.details?.file_size || 0), 0);
     const sizeText = formatSize(totalSize);
     
-    // Open confirmation modal
-    openModal("force-update-all", {
-      modsCount: modsToUpdate.length,
-      totalSize: sizeText,
-      onConfirm: async () => {
-        await updateMods(modsToUpdate);
-      }
-    });
+    // 100MB in bytes
+    const SIZE_THRESHOLD = 100 * 1024 * 1024; // 104857600 bytes
+    
+    // Only show modal if total size exceeds 100MB
+    if (totalSize > SIZE_THRESHOLD) {
+      // Open confirmation modal
+      openModal("force-update-all", {
+        modsCount: modsToUpdate.length,
+        totalSize: sizeText,
+        onConfirm: async () => {
+          await updateMods(modsToUpdate);
+        }
+      });
+    } else {
+      // Size is below threshold, update directly without modal
+      await updateMods(modsToUpdate);
+    }
   };
 
   const handleUpdateSelected = async (selectedMods: typeof mods) => {
@@ -219,14 +229,28 @@ export default function InstalledModsTab() {
             )}
           </span>
           {!isLoading && !error && filteredAndSortedMods.length > 0 && (
-            <button
-              onClick={handleForceUpdateAll}
-              disabled={isLoading || isUpdating || filteredAndSortedMods.filter(m => !m.updated).length === 0 || !permissions.canWrite}
-              title={!permissions.canWrite ? "Write access required to update mods" : "Force update all mods"}
-              className="force-update-all-button"
-            >
-              Force Update All ({filteredAndSortedMods.filter(m => !m.updated).length})
-            </button>
+            <>
+              {isUpdating ? (
+                <button
+                  onClick={cancelUpdateMods}
+                  disabled={!isUpdating}
+                  title="Cancel ongoing update"
+                  className="force-update-all-button"
+                  style={{ backgroundColor: "#d32f2f" }}
+                >
+                  Cancel Update
+                </button>
+              ) : (
+                <button
+                  onClick={handleForceUpdateAll}
+                  disabled={isLoading || isUpdating || filteredAndSortedMods.filter(m => !m.updated).length === 0 || !permissions.canWrite}
+                  title={!permissions.canWrite ? "Write access required to update mods" : "Force update all mods"}
+                  className="force-update-all-button"
+                >
+                  Force Update All ({filteredAndSortedMods.filter(m => !m.updated).length})
+                </button>
+              )}
+            </>
           )}
         </div>
         <ModList
