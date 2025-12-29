@@ -1,6 +1,6 @@
 [package]
 name = "rimworld-workshop-downloader"
-version = "0.5.0"
+version = "0.5.1"
 description = "Rimworld Workshop Downloader"
 authors = ["Michał Piasecki"]
 edition = "2021"
