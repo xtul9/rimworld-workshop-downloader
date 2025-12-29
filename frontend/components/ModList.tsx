@@ -218,10 +218,23 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
     });
   }, [mods, lastSelectedIndex]);
 
-  const handleContextMenu = useCallback((e: React.MouseEvent, mod: BaseMod) => {
+  const handleContextMenu = useCallback((e: React.MouseEvent, mod: BaseMod, index: number) => {
     e.preventDefault();
     
-    const selected = mods.filter(m => selectedMods.has(m.modId));
+    // Select the mod if it's not already selected (right-click should select the mod)
+    // Update state immediately so the visual selection appears
+    const wasAlreadySelected = selectedMods.has(mod.modId);
+    if (!wasAlreadySelected) {
+      // Add the clicked mod to selection (single selection, clear others)
+      setSelectedMods(new Set([mod.modId]));
+      setLastSelectedIndex(index);
+    }
+    
+    // Get selected mods - if we just selected this mod, it will be the only one selected
+    // Otherwise, use current selection
+    const selected = wasAlreadySelected
+      ? mods.filter(m => selectedMods.has(m.modId))
+      : [mod];
     const hasBackup = modBackups.get(mod.modId) || false;
     const canRestoreBackup = mod.modPath && settings.backupDirectory && hasBackup;
     const hasIgnoredUpdate = ignoredUpdates.get(mod.modId) || false;
@@ -314,7 +327,7 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
       items,
       handleContextAction
     );
-  }, [mods, selectedMods, modBackups, ignoredUpdates, settings.backupDirectory, showContextMenu, useInstalledModsContext, isUpdating]);
+  }, [mods, selectedMods, modBackups, ignoredUpdates, settings.backupDirectory, showContextMenu, useInstalledModsContext, isUpdating, handleSelectMod]);
 
   const handleContextAction = useCallback(async (action: string, data: { mod: BaseMod; selected: BaseMod[] }) => {
     const { mod, selected } = data;
@@ -516,7 +529,7 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
                   }}
                   className={`mod-item ${selectedMods.has(mod.modId) ? "selected" : ""} ${mod.updated ? "updated" : ""} ${isUpdating ? "updating" : ""} ${!mod.details ? "no-details" : ""} ${mod.nonSteamMod ? "non-steam-mod" : ""} ${modState ? `mod-state-${modState}` : ""}`}
                   onClick={(e) => !isUpdating && handleSelectMod(mod.modId, e.ctrlKey || e.metaKey, e.shiftKey, index)}
-                  onContextMenu={(e) => !isUpdating && handleContextMenu(e, mod)}
+                  onContextMenu={(e) => !isUpdating && handleContextMenu(e, mod, index)}
                 >
                   {isUpdating ? (
                     <div className="mod-item-updating">
