@@ -191,8 +191,9 @@ pub async fn restore_backup(
     }
     
     // Ignore this path in mod watcher during restore operation
-    use crate::services::ignore_path_in_watcher;
+    use crate::services::{ignore_path_in_watcher, WatcherIgnoreGuard};
     ignore_path_in_watcher(normalized_mod_path.clone()).await;
+    let _guard = WatcherIgnoreGuard::new(normalized_mod_path.clone());
     
     // Remove current mod folder (async)
     let mod_path_clone = normalized_mod_path.clone();
@@ -220,9 +221,9 @@ pub async fn restore_backup(
     }).await
     .map_err(|e| format!("Task panicked: {:?}", e))??;
     
-    // Stop ignoring this path in mod watcher after restore is complete
-    use crate::services::unignore_path_in_watcher;
-    unignore_path_in_watcher(normalized_mod_path.clone()).await;
+    // Manually unignore the path (this consumes the guard and prevents Drop from running)
+    // If we reach here, the operation was successful
+    _guard.unignore().await;
     
     Ok(serde_json::json!({
         "message": "Backup restored successfully",

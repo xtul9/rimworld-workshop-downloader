@@ -87,6 +87,51 @@ pub async fn unignore_path_in_watcher(path: PathBuf) {
     guard.unignore_path(path).await;
 }
 
+/// RAII guard that automatically unignores a path when dropped
+/// This ensures that paths are always unignored even if an error occurs
+pub struct WatcherIgnoreGuard {
+    path: Option<PathBuf>,
+}
+
+impl WatcherIgnoreGuard {
+    /// Create a new guard that will unignore the path when dropped
+    pub fn new(path: PathBuf) -> Self {
+        Self { path: Some(path) }
+    }
+
+    /// Manually unignore the path and consume the guard
+    /// This prevents the Drop from running
+    pub async fn unignore(mut self) {
+        if let Some(path) = self.path.take() {
+            unignore_path_in_watcher(path).await;
+        }
+    }
+}
+
+impl Drop for WatcherIgnoreGuard {
+    fn drop(&mut self) {
+        // In Drop, we can't await, so we spawn a task
+        // This ensures cleanup happens even if the async function returns early with an error
+        if let Some(path) = self.path.take() {
+            let watcher = get_mod_watcher();
+            // Try to get the current runtime handle, fall back to spawn if available
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                handle.spawn(async move {
+                    let guard = watcher.lock().await;
+                    guard.unignore_path(path).await;
+                });
+            } else {
+                // If no runtime handle is available, try to spawn anyway
+                // This should work in most cases since we're in a tokio context
+                tokio::spawn(async move {
+                    let guard = watcher.lock().await;
+                    guard.unignore_path(path).await;
+                });
+            }
+        }
+    }
+}
+
 /// Find all mod folders with the given mod ID
 pub async fn find_all_mod_folders_with_id(mods_path: &Path, mod_id: &str) -> Result<Vec<PathBuf>, String> {
     use crate::core::mod_scanner::query_mod_id;

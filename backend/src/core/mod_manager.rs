@@ -202,8 +202,9 @@ impl ModUpdater {
         }
 
         // Ignore this path in mod watcher during update operation
-        use crate::services::ignore_path_in_watcher;
+        use crate::services::{ignore_path_in_watcher, WatcherIgnoreGuard};
         ignore_path_in_watcher(mod_destination_path.clone()).await;
+        let _guard = WatcherIgnoreGuard::new(mod_destination_path.clone());
 
         // Remove existing mod folder if it exists (async)
         if mod_destination_path.exists() {
@@ -247,9 +248,9 @@ impl ModUpdater {
         Self::ensure_published_file_id(&mod_destination_path, mod_id).await
             .map_err(|e| format!("Failed to create PublishedFileId.txt: {}", e))?;
 
-        // Stop ignoring this path in mod watcher after update is complete
-        use crate::services::unignore_path_in_watcher;
-        unignore_path_in_watcher(mod_destination_path.clone()).await;
+        // Manually unignore the path (this consumes the guard and prevents Drop from running)
+        // If we reach here, the operation was successful
+        _guard.unignore().await;
 
         eprintln!("[ModUpdater] Mod {} copied successfully to {:?}", mod_id, mod_destination_path);
 
