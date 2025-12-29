@@ -6,6 +6,7 @@ import { BaseMod } from "../types";
 import { useMods } from "../contexts/ModsContext";
 import { useInstalledMods } from "../contexts/InstalledModsContext";
 import { useSettings } from "../contexts/SettingsContext";
+import { useAccessError } from "../contexts/AccessErrorContext";
 import { useModal } from "../contexts/ModalContext";
 import { useContextMenu, ContextMenuItem } from "../contexts/ContextMenuContext";
 import { useFormatting } from "../hooks/useFormatting";
@@ -47,6 +48,7 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
   const hasQueried = useInstalledModsContext ? installedModsContext.hasLoaded : modsContext.hasQueried;
   const isUpdatingDetails = useInstalledModsContext ? installedModsContext.isUpdatingDetails : false;
   const { settings } = useSettings();
+  const { permissions } = useAccessError();
   const { openModal } = useModal();
   const { showContextMenu } = useContextMenu();
   const { formatSize, formatDate } = useFormatting();
@@ -255,7 +257,7 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
         { 
           label: useInstalledModsContext ? "Force update selected mods" : "Update selected mods", 
           action: "update",
-          disabled: isUpdating || !allModsHaveDetails || !allModsAreSteam
+          disabled: isUpdating || !allModsHaveDetails || !allModsAreSteam || !permissions.canWrite
         },
         { separator: true }
       );
@@ -279,12 +281,12 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
         { 
           label: useInstalledModsContext ? "Force update" : "Update", 
           action: "update",
-          disabled: isUpdating || !hasModDetails || isNonSteamMod
+          disabled: isUpdating || !hasModDetails || isNonSteamMod || !permissions.canWrite
         },
         { 
           label: hasBackup ? "Restore Backup" : "No backup available", 
           action: "restore-backup",
-          disabled: !canRestoreBackup
+          disabled: !canRestoreBackup || !permissions.canWrite
         },
         { separator: true },
         { label: "Open mod folder", action: "open-folder" },
@@ -327,13 +329,21 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
       items,
       handleContextAction
     );
-  }, [mods, selectedMods, modBackups, ignoredUpdates, settings.backupDirectory, showContextMenu, useInstalledModsContext, isUpdating, handleSelectMod]);
+  }, [mods, selectedMods, modBackups, ignoredUpdates, settings.backupDirectory, showContextMenu, useInstalledModsContext, isUpdating, handleSelectMod, permissions.canWrite]);
 
   const handleContextAction = useCallback(async (action: string, data: { mod: BaseMod; selected: BaseMod[] }) => {
     const { mod, selected } = data;
 
     switch (action) {
       case "update":
+        if (!permissions.canWrite) {
+          openModal("message", {
+            title: "Write Access Required",
+            message: "Write access is required to update mods. Please check directory permissions in Settings.",
+            type: "error"
+          });
+          return;
+        }
         if (selected.length > 1) {
           onUpdateSelected(selected);
         } else {
@@ -341,6 +351,14 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
         }
         break;
       case "restore-backup":
+        if (!permissions.canWrite) {
+          openModal("message", {
+            title: "Write Access Required",
+            message: "Write access is required to restore backups. Please check directory permissions in Settings.",
+            type: "error"
+          });
+          return;
+        }
         if (!mod.modPath || !settings.backupDirectory) {
           openModal("restore-backup", {
             mod,
@@ -382,24 +400,40 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
                 })
                 .catch((openError) => {
                   console.error("[ModList] Both revealItemInDir and openPath failed:", openError);
-                  alert(`Failed to open folder: ${mod.modPath}\nError: ${openError instanceof Error ? openError.message : String(openError)}`);
+                  openModal("message", {
+                    title: "Failed to Open Folder",
+                    message: `Failed to open folder: ${mod.modPath}\nError: ${openError instanceof Error ? openError.message : String(openError)}`,
+                    type: "error"
+                  });
                 });
             });
         } else {
           console.warn("[ModList] Cannot open folder: modPath is not set");
-          alert("Mod folder path is not available");
+          openModal("message", {
+            title: "Folder Path Not Available",
+            message: "Mod folder path is not available",
+            type: "error"
+          });
         }
         break;
       case "open-workshop":
         openUrl(`https://steamcommunity.com/sharedfiles/filedetails/?id=${mod.modId}`).catch((error) => {
           console.error("Failed to open workshop page:", error);
-          alert(`Failed to open workshop page for mod ${mod.modId}`);
+          openModal("message", {
+            title: "Failed to Open Workshop",
+            message: `Failed to open workshop page for mod ${mod.modId}`,
+            type: "error"
+          });
         });
         break;
       case "open-changelog":
         openUrl(`https://steamcommunity.com/sharedfiles/filedetails/changelog/${mod.modId}`).catch((error) => {
           console.error("Failed to open changelog page:", error);
-          alert(`Failed to open changelog page for mod ${mod.modId}`);
+          openModal("message", {
+            title: "Failed to Open Changelog",
+            message: `Failed to open changelog page for mod ${mod.modId}`,
+            type: "error"
+          });
         });
         break;
       case "ignore-from-list":
@@ -432,11 +466,15 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
           await checkIgnoredUpdates();
         } catch (error) {
           console.error("Failed to undo ignore update:", error);
-          alert(`Failed to undo ignore update: ${error instanceof Error ? error.message : String(error)}`);
+          openModal("message", {
+            title: "Failed to Undo Ignore",
+            message: `Failed to undo ignore update: ${error instanceof Error ? error.message : String(error)}`,
+            type: "error"
+          });
         }
         break;
     }
-  }, [mods, modBackups, backupDates, settings, openModal, checkBackups, checkIgnoredUpdates, onUpdateSelected, ignoreFromList, ignoreThisUpdate, ignorePermanently]);
+  }, [mods, modBackups, backupDates, settings, openModal, checkBackups, checkIgnoredUpdates, onUpdateSelected, ignoreFromList, ignoreThisUpdate, ignorePermanently, permissions.canWrite]);
 
 
   return (

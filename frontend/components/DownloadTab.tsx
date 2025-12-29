@@ -3,6 +3,8 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { BaseMod } from "../types";
 import { useModsPath } from "../contexts/ModsPathContext";
 import { useSettings } from "../contexts/SettingsContext";
+import { useAccessError } from "../contexts/AccessErrorContext";
+import { useModal } from "../contexts/ModalContext";
 import { useFormatting } from "../hooks/useFormatting";
 import { invoke } from "@tauri-apps/api/core";
 import "./DownloadTab.css";
@@ -22,6 +24,8 @@ interface ModInput {
 export default function DownloadTab() {
   const { modsPath } = useModsPath();
   const { settings } = useSettings();
+  const { permissions } = useAccessError();
+  const { openModal } = useModal();
   const { formatSize } = useFormatting();
   const [modInputs, setModInputs] = useState<ModInput[]>([
     { id: "1", value: "", status: "empty" }
@@ -230,6 +234,15 @@ export default function DownloadTab() {
     const readyMods = modInputs.filter(m => m.status === "ready" && m.modId);
     if (readyMods.length === 0 || isDownloading) return;
 
+    if (!permissions.canWrite) {
+      openModal("message", {
+        title: "Write Access Required",
+        message: "Write access is required to download mods. Please check directory permissions in Settings.",
+        type: "error"
+      });
+      return;
+    }
+
     setIsDownloading(true);
     setProgress(0);
     setProgressMax(readyMods.length);
@@ -354,7 +367,11 @@ export default function DownloadTab() {
 
   const handleImportMods = async () => {
     if (!importText.trim()) {
-      alert("Please paste a list of mod URLs or IDs");
+      openModal("message", {
+        title: "Import Mods",
+        message: "Please paste a list of mod URLs or IDs",
+        type: "info"
+      });
       return;
     }
 
@@ -365,7 +382,11 @@ export default function DownloadTab() {
       .filter(line => line.length > 0);
 
     if (lines.length === 0) {
-      alert("No valid mod URLs or IDs found");
+      openModal("message", {
+        title: "Import Mods",
+        message: "No valid mod URLs or IDs found",
+        type: "info"
+      });
       return;
     }
 
@@ -396,7 +417,11 @@ export default function DownloadTab() {
       const validModIds = lines.map(line => extractModId(line)).filter((id): id is string => !!id);
       
       if (validModIds.length === 0) {
-        alert("No valid mod URLs or IDs found in the pasted text");
+        openModal("message", {
+          title: "Import Mods",
+          message: "No valid mod URLs or IDs found in the pasted text",
+          type: "info"
+        });
       } else {
         // Silently ignore if all are duplicates - no alert needed
         // Just close the modal
@@ -683,7 +708,8 @@ export default function DownloadTab() {
           <div className="download-actions">
             <button
               onClick={handleDownloadAll}
-              disabled={isDownloading || !modsPath}
+              disabled={isDownloading || !modsPath || !permissions.canWrite}
+              title={!permissions.canWrite ? "Write access required to download mods" : undefined}
               className="download-all-button"
             >
               {isDownloading ? "Downloading..." : `Download all (${readyModsCount})`}

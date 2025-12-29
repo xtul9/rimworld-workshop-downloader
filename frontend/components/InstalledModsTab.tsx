@@ -2,6 +2,7 @@ import { useEffect, useState, useMemo } from "react";
 import ModList from "./ModList";
 import { useModsPath } from "../contexts/ModsPathContext";
 import { useInstalledMods } from "../contexts/InstalledModsContext";
+import { useAccessError } from "../contexts/AccessErrorContext";
 import { useFormatting } from "../hooks/useFormatting";
 import { useModal } from "../contexts/ModalContext";
 import { useSettings } from "../contexts/SettingsContext";
@@ -22,6 +23,7 @@ export default function InstalledModsTab() {
     updateMods,
   } = useInstalledMods();
   const { formatSize } = useFormatting();
+  const { permissions } = useAccessError();
   const { openModal } = useModal();
   const { settings, updateSetting } = useSettings();
   const [searchQuery, setSearchQuery] = useState("");
@@ -72,9 +74,22 @@ export default function InstalledModsTab() {
   const handleForceUpdateAll = () => {
     if (filteredAndSortedMods.length === 0) return;
     
+    if (!permissions.canWrite) {
+      openModal("message", {
+        title: "Write Access Required",
+        message: "Write access is required to update mods. Please check directory permissions in Settings.",
+        type: "error"
+      });
+      return;
+    }
+    
     const modsToUpdate = filteredAndSortedMods.filter(m => !m.updated);
     if (modsToUpdate.length === 0) {
-      alert("All mods are already up to date.");
+      openModal("message", {
+        title: "All Mods Up to Date",
+        message: "All mods are already up to date.",
+        type: "info"
+      });
       return;
     }
 
@@ -92,6 +107,14 @@ export default function InstalledModsTab() {
   };
 
   const handleUpdateSelected = async (selectedMods: typeof mods) => {
+    if (!permissions.canWrite) {
+      openModal("message", {
+        title: "Write Access Required",
+        message: "Write access is required to update mods. Please check directory permissions in Settings.",
+        type: "error"
+      });
+      return;
+    }
     await updateMods(selectedMods);
   };
 
@@ -198,8 +221,8 @@ export default function InstalledModsTab() {
           {!isLoading && !error && filteredAndSortedMods.length > 0 && (
             <button
               onClick={handleForceUpdateAll}
-              disabled={isLoading || isUpdating || filteredAndSortedMods.filter(m => !m.updated).length === 0}
-              title="Force update all mods"
+              disabled={isLoading || isUpdating || filteredAndSortedMods.filter(m => !m.updated).length === 0 || !permissions.canWrite}
+              title={!permissions.canWrite ? "Write access required to update mods" : "Force update all mods"}
               className="force-update-all-button"
             >
               Force Update All ({filteredAndSortedMods.filter(m => !m.updated).length})

@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { BaseMod } from "../types";
 import { useModal } from "../contexts/ModalContext";
 import { useSettings } from "../contexts/SettingsContext";
+import { useAccessError } from "../contexts/AccessErrorContext";
 import { useFormatting } from "../hooks/useFormatting";
 import "./ModList.css";
 
@@ -16,12 +17,18 @@ interface RestoreBackupModalProps {
 export default function RestoreBackupModal({ mod, backupDate, onRestoreComplete, error: initialError }: RestoreBackupModalProps) {
   const { closeModal } = useModal();
   const { settings } = useSettings();
+  const { permissions } = useAccessError();
   const { formatDate } = useFormatting();
   const [isRestoring, setIsRestoring] = useState(false);
   const [restoreError, setRestoreError] = useState<string | null>(initialError || null);
   const [restoreSuccess, setRestoreSuccess] = useState<string | null>(null);
 
   const handleRestoreBackup = useCallback(async () => {
+    if (!permissions.canWrite) {
+      setRestoreError("Write access is required to restore backups. Please check directory permissions in Settings.");
+      return;
+    }
+    
     if (!mod.modPath || !settings.backupDirectory) {
       setRestoreError("Missing required data to restore backup");
       return;
@@ -58,7 +65,7 @@ export default function RestoreBackupModal({ mod, backupDate, onRestoreComplete,
     } finally {
       setIsRestoring(false);
     }
-  }, [mod, settings.backupDirectory, onRestoreComplete, closeModal]);
+  }, [mod, settings.backupDirectory, onRestoreComplete, closeModal, permissions.canWrite]);
 
   return (
     <div className="restore-modal-overlay" onClick={() => {
@@ -127,7 +134,8 @@ export default function RestoreBackupModal({ mod, backupDate, onRestoreComplete,
                   handleRestoreBackup();
                 }}
                 className="restore-button"
-                disabled={isRestoring}
+                disabled={isRestoring || !permissions.canWrite}
+                title={!permissions.canWrite ? "Write access required to restore backups" : undefined}
                 type="button"
               >
                 {isRestoring ? "Restoring..." : "Restore Backup"}

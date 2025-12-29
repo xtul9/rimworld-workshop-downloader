@@ -9,11 +9,19 @@ interface AccessErrorPayload {
   reason: string;
 }
 
+interface AccessPermissions {
+  canRead: boolean;
+  canWrite: boolean;
+  hasError: boolean; // true if canRead === false (blocks everything)
+  hasWarning: boolean; // true if canRead === true && canWrite === false (blocks write operations only)
+}
+
 interface AccessErrorContextType {
   error: AccessErrorPayload | null;
   isDismissed: boolean;
   dismissError: () => void;
-  hasActiveError: boolean; // true if error exists and is not dismissed
+  hasActiveError: boolean; // true if error exists and is not dismissed and canRead === false
+  permissions: AccessPermissions; // Current access permissions
 }
 
 const AccessErrorContext = createContext<AccessErrorContextType | undefined>(undefined);
@@ -60,7 +68,25 @@ export function AccessErrorProvider({ children }: { children: ReactNode }) {
     setIsDismissed(true);
   };
 
-  const hasActiveError = error !== null && !isDismissed;
+  // Calculate permissions based on error state
+  // If no error, assume full access (default state)
+  const permissions: AccessPermissions = error
+    ? {
+        canRead: error.canRead,
+        canWrite: error.canWrite,
+        hasError: !error.canRead,
+        hasWarning: error.canRead && !error.canWrite,
+      }
+    : {
+        canRead: true,
+        canWrite: true,
+        hasError: false,
+        hasWarning: false,
+      };
+
+  // Only block for true errors (no read access), not warnings (read-only access)
+  // Backend emits warnings when canRead=true but canWrite=false, which should not block the app
+  const hasActiveError = error !== null && !isDismissed && !error.canRead;
 
   return (
     <AccessErrorContext.Provider
@@ -69,6 +95,7 @@ export function AccessErrorProvider({ children }: { children: ReactNode }) {
         isDismissed,
         dismissError,
         hasActiveError,
+        permissions,
       }}
     >
       {children}

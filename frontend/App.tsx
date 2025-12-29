@@ -13,6 +13,7 @@ import { AccessErrorProvider, useAccessError } from "./contexts/AccessErrorConte
 import { ModWatcherProvider } from "./contexts/ModWatcherContext";
 import RestoreBackupModal from "./components/RestoreBackupModal";
 import ForceUpdateAllModal from "./components/ForceUpdateAllModal";
+import MessageModal from "./components/MessageModal";
 import ContextMenu from "./components/ContextMenu";
 import AccessErrorBanner from "./components/AccessErrorBanner";
 import { Theme } from "./utils/settingsStorage";
@@ -22,11 +23,12 @@ function AppContent() {
   const { error } = useModsPath();
   const { settings, isLoading } = useSettings();
   const { modalType, modalData } = useModal();
-  const { hasActiveError } = useAccessError();
+  const { hasActiveError, permissions } = useAccessError();
   const [activeTab, setActiveTab] = useState<"query" | "download" | "installed" | "settings">("query");
   const [initialTabSet, setInitialTabSet] = useState(false);
   
-  // If there's an active access error, force settings tab and prevent switching
+  // If there's an active access error (no read access), force settings tab and prevent switching
+  // Warnings (read-only access) don't block tab switching
   useEffect(() => {
     if (hasActiveError && activeTab !== "settings") {
       setActiveTab("settings");
@@ -137,6 +139,13 @@ function AppContent() {
           modsCount={modalData.modsCount}
           totalSize={modalData.totalSize}
           onConfirm={modalData.onConfirm}
+        />
+      )}
+      {modalType === "message" && modalData && (
+        <MessageModal
+          title={modalData.title}
+          message={modalData.message}
+          type={modalData.type}
         />
       )}
 
