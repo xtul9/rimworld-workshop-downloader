@@ -309,7 +309,7 @@ export function InstalledModsProvider({ children }: { children: ReactNode }) {
       // Stop mod watcher when component unmounts or modsPath changes
       invoke("stop_mod_watcher").catch(console.error);
     };
-  }, [settings.modsPath]);
+  }, [settings.modsPath, settings.installedModsSortBy, settings.installedModsSortOrder]);
   
   // Restart mod watcher when modsPath changes
   useEffect(() => {
