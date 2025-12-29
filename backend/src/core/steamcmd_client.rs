@@ -38,7 +38,37 @@ impl Downloader {
         
         eprintln!("[Downloader] Killing {} tracked SteamCMD process(es) by PID", pids.len());
         
-        // Ensure both lists are cleared
+        // Kill each process using platform-specific commands
+        for pid in &pids {
+            #[cfg(unix)]
+            {
+                use std::process;
+                // Kill process group to kill all children
+                let _ = process::Command::new("kill")
+                    .arg("-9")
+                    .arg(format!("-{}", pid))
+                    .output();
+                let _ = process::Command::new("kill")
+                    .arg("-9")
+                    .arg(pid.to_string())
+                    .output();
+                // Also try pkill to kill all child processes
+                let _ = process::Command::new("pkill")
+                    .arg("-9")
+                    .arg("-P")
+                    .arg(pid.to_string())
+                    .output();
+            }
+            #[cfg(windows)]
+            {
+                use std::process;
+                let _ = process::Command::new("taskkill")
+                    .args(&["/F", "/T", "/PID", &pid.to_string()])
+                    .output();
+            }
+        }
+        
+        // Ensure list is cleared
         {
             let mut pid_list = self.active_process_pids.lock().await;
             pid_list.clear();
