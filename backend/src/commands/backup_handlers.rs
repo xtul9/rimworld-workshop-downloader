@@ -2,8 +2,9 @@
 
 use std::path::PathBuf;
 use serde_json;
-use tauri::command;
+use tauri::{command, AppHandle};
 use crate::services::extract_folder_name;
+use crate::core::access_check::ensure_directory_access;
 
 /// Check if backup exists for a mod (optimized with spawn_blocking)
 #[command]
@@ -146,12 +147,16 @@ pub async fn check_backups(
 /// Restore mod from backup (optimized with async I/O)
 #[command]
 pub async fn restore_backup(
+    app: AppHandle,
     mod_path: String,
     backup_directory: String,
 ) -> Result<serde_json::Value, String> {
     
     let normalized_mod_path = PathBuf::from(&mod_path);
     let normalized_backup_directory = PathBuf::from(&backup_directory);
+    
+    // Check directory access to mod_path (write access is required for restore)
+    ensure_directory_access(&app, &normalized_mod_path, &mod_path)?;
     
     // Safety check: ensure backupDirectory is not inside modPath (or vice versa)
     if normalized_mod_path.starts_with(&normalized_backup_directory) ||
@@ -220,6 +225,7 @@ pub async fn restore_backup(
 /// Restore backups for multiple mods (optimized batch version)
 #[command]
 pub async fn restore_backups(
+    app: AppHandle,
     mod_paths: Vec<String>,
     backup_directory: String,
 ) -> Result<serde_json::Value, String> {
@@ -233,10 +239,11 @@ pub async fn restore_backups(
     for mod_path in mod_paths {
         let mod_path_clone = mod_path.clone();
         let backup_dir_clone = backup_directory.clone();
+        let app_clone = app.clone();
         
         // Spawn restore task for each mod
         let future = async move {
-            let result = restore_backup(mod_path_clone.clone(), backup_dir_clone).await;
+            let result = restore_backup(app_clone, mod_path_clone.clone(), backup_dir_clone).await;
             (mod_path_clone, result)
         };
         

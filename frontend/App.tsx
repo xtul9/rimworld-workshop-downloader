@@ -9,9 +9,11 @@ import { InstalledModsProvider } from "./contexts/InstalledModsContext";
 import { SettingsProvider, useSettings } from "./contexts/SettingsContext";
 import { ModalProvider, useModal } from "./contexts/ModalContext";
 import { ContextMenuProvider } from "./contexts/ContextMenuContext";
+import { AccessErrorProvider, useAccessError } from "./contexts/AccessErrorContext";
 import RestoreBackupModal from "./components/RestoreBackupModal";
 import ForceUpdateAllModal from "./components/ForceUpdateAllModal";
 import ContextMenu from "./components/ContextMenu";
+import AccessErrorBanner from "./components/AccessErrorBanner";
 import { Theme } from "./utils/settingsStorage";
 import "./App.css";
 
@@ -19,8 +21,16 @@ function AppContent() {
   const { error } = useModsPath();
   const { settings, isLoading } = useSettings();
   const { modalType, modalData } = useModal();
+  const { hasActiveError } = useAccessError();
   const [activeTab, setActiveTab] = useState<"query" | "download" | "installed" | "settings">("query");
   const [initialTabSet, setInitialTabSet] = useState(false);
+  
+  // If there's an active access error, force settings tab and prevent switching
+  useEffect(() => {
+    if (hasActiveError && activeTab !== "settings") {
+      setActiveTab("settings");
+    }
+  }, [hasActiveError, activeTab]);
   
   // Set initial tab based on isFirstRun after settings load
   useEffect(() => {
@@ -59,22 +69,26 @@ function AppContent() {
 
   return (
     <div className="app-container">
+      <AccessErrorBanner />
       <div className="app-tabs">
         <button
-          className={`tab-button ${activeTab === "query" ? "active" : ""}`}
-          onClick={() => setActiveTab("query")}
+          className={`tab-button ${activeTab === "query" ? "active" : ""} ${hasActiveError ? "disabled" : ""}`}
+          onClick={() => !hasActiveError && setActiveTab("query")}
+          disabled={hasActiveError}
         >
           Query & Update
         </button>
         <button
-          className={`tab-button ${activeTab === "installed" ? "active" : ""}`}
-          onClick={() => setActiveTab("installed")}
+          className={`tab-button ${activeTab === "installed" ? "active" : ""} ${hasActiveError ? "disabled" : ""}`}
+          onClick={() => !hasActiveError && setActiveTab("installed")}
+          disabled={hasActiveError}
         >
           Installed Mods
         </button>
         <button
-          className={`tab-button ${activeTab === "download" ? "active" : ""}`}
-          onClick={() => setActiveTab("download")}
+          className={`tab-button ${activeTab === "download" ? "active" : ""} ${hasActiveError ? "disabled" : ""}`}
+          onClick={() => !hasActiveError && setActiveTab("download")}
+          disabled={hasActiveError}
         >
           Download
         </button>
@@ -86,20 +100,26 @@ function AppContent() {
         </button>
       </div>
 
-      <main className="app-content">
+      <main className={`app-content ${hasActiveError ? "blocked" : ""}`}>
         {error && (
           <div className="error-message">
             <p>{error}</p>
           </div>
         )}
 
-        {activeTab === "query" && <QueryTab />}
+        {!hasActiveError && activeTab === "query" && <QueryTab />}
 
-        {activeTab === "installed" && <InstalledModsTab />}
+        {!hasActiveError && activeTab === "installed" && <InstalledModsTab />}
 
-        {activeTab === "download" && <DownloadTab />}
+        {!hasActiveError && activeTab === "download" && <DownloadTab />}
 
         {activeTab === "settings" && <SettingsTab />}
+        
+        {hasActiveError && activeTab !== "settings" && (
+          <div className="access-blocked-message">
+            <p>Application is blocked due to directory access error. Please fix the issue in Settings or dismiss the error banner.</p>
+          </div>
+        )}
       </main>
 
       {/* Global Modals */}
@@ -130,13 +150,15 @@ function App() {
     <SettingsProvider>
       <ModalProvider>
         <ContextMenuProvider>
-          <ModsPathProvider>
-            <ModsProvider>
-              <InstalledModsProvider>
-                <AppContent />
-              </InstalledModsProvider>
-            </ModsProvider>
-          </ModsPathProvider>
+          <AccessErrorProvider>
+            <ModsPathProvider>
+              <ModsProvider>
+                <InstalledModsProvider>
+                  <AppContent />
+                </InstalledModsProvider>
+              </ModsProvider>
+            </ModsPathProvider>
+          </AccessErrorProvider>
         </ContextMenuProvider>
       </ModalProvider>
     </SettingsProvider>

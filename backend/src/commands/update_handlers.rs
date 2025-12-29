@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use tauri::{AppHandle, Emitter};
 use crate::core::mod_scanner::BaseMod;
 use crate::core::mod_manager::ModUpdater;
+use crate::core::access_check::ensure_directory_access;
 use crate::services::{get_downloader, get_mods_path_from_mod_path, find_all_mod_folders_with_id, write_last_updated_file};
 
 /// Update mods
@@ -32,6 +33,10 @@ pub async fn update_mods(
     // Extract modsPath from first mod
     let first_mod = &steam_mods[0];
     let mods_path = get_mods_path_from_mod_path(&PathBuf::from(&first_mod.mod_path))?;
+    let mods_path_str = mods_path.to_string_lossy().to_string();
+    
+    // Check directory access before proceeding
+    ensure_directory_access(&app, &mods_path, &mods_path_str)?;
     
     // Prepare mods for download
     let mod_ids: Vec<String> = steam_mods.iter().map(|m| m.mod_id.clone()).collect();

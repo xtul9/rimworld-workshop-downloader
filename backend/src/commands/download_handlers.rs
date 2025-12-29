@@ -5,6 +5,7 @@ use serde_json;
 use tauri::{command, AppHandle, Emitter};
 use crate::core::mod_manager::ModUpdater;
 use crate::core::mod_scanner::query_mod_batch;
+use crate::core::access_check::ensure_directory_access;
 use crate::services::{get_downloader, get_steam_api, write_last_updated_file};
 
 /// Download mod(s) from Steam Workshop
@@ -24,6 +25,10 @@ pub async fn download_mod(
             return Err("Mod is already being downloaded".to_string());
         }
     }
+    
+    // Check directory access before proceeding
+    let mods_path_buf = PathBuf::from(&mods_path);
+    ensure_directory_access(&app, &mods_path_buf, &mods_path)?;
     
     // Mark as downloading
     {

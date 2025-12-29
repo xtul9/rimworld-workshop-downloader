@@ -2,6 +2,7 @@
 
 use tauri::{command, AppHandle};
 use crate::services::{get_mod_watcher, validate_mods_path};
+use crate::core::access_check::check_directory_access_with_warning;
 
 /// Start watching the mods folder for changes
 #[command]
@@ -10,6 +11,9 @@ pub async fn start_mod_watcher(
     mods_path: String,
 ) -> Result<(), String> {
     let path = validate_mods_path(&mods_path)?;
+    
+    // Check directory access (read access is required for watching)
+    check_directory_access_with_warning(&app, &path, &mods_path)?;
     
     let watcher = get_mod_watcher();
     let mut watcher_guard = watcher.lock().await;

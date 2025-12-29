@@ -64,8 +64,13 @@ body {
   border-bottom: 2px solid transparent;
 }
 
-.tab-button:hover {
+.tab-button:hover:not(:disabled) {
   background-color: #3d566e;
+}
+
+.tab-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .tab-button.active {
@@ -125,4 +130,28 @@ body {
 
 .dark .app-content {
     background-color: #1e1e1e;
+}
+
+.app-content.blocked {
+  position: relative;
+}
+
+.access-blocked-message {
+  padding: 20px;
+  background-color: #fff3cd;
+  border: 1px solid #ffc107;
+  border-radius: 4px;
+  margin: 20px;
+  text-align: center;
+}
+
+.dark .access-blocked-message {
+  background-color: #3d2f00;
+  border-color: #ffc107;
+  color: #ffc107;
+}
+
+.access-blocked-message p {
+  margin: 0;
+  font-size: 14px;
 }
