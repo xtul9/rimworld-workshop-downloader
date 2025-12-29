@@ -30,11 +30,17 @@ export function ModalProvider({ children }: { children: ReactNode }) {
     
     setModalQueue(prev => {
       const newQueue = [...prev, newItem];
-      const newTotalLength = newQueue.length;
       const isQueueEmpty = prev.length === 0;
       
-      // Update total queue length
-      setTotalQueueLength(newTotalLength);
+      // Update total queue length only if starting a new batch (queue was empty)
+      // Otherwise, increment it to maintain correct position calculation
+      if (isQueueEmpty) {
+        // Starting a new batch - set total length to 1
+        setTotalQueueLength(1);
+      } else {
+        // Adding to existing batch - increment total length
+        setTotalQueueLength(prevTotal => prevTotal + 1);
+      }
       
       // If no modal is currently shown, show this one immediately
       if (isQueueEmpty) {
