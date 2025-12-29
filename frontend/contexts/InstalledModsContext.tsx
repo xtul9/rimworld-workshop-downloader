@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { BaseMod } from "../types";
 import { useSettings } from "./SettingsContext";
 import { ModState } from "./ModsContext";
+import { sortMods } from "../utils/modSorting";
 
 interface InstalledModsContextType {
   mods: BaseMod[];
@@ -82,6 +83,7 @@ export function InstalledModsProvider({ children }: { children: ReactNode }) {
       setError(null);
       setHasLoaded(true);
       
+      
       // Start updating details in background if there are mods without details
       if (mods.length > 0 && mods.some(m => !m.details)) {
         setIsUpdatingDetails(true);
@@ -115,6 +117,8 @@ export function InstalledModsProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let unlistenState: (() => void) | undefined;
     let unlistenUpdated: (() => void) | undefined;
+    let unlistenAdded: (() => void) | undefined;
+    let unlistenRemoved: (() => void) | undefined;
 
     const setupListeners = async () => {
       // Listen for mod-state events - this is the PRIMARY event for all state changes
@@ -241,6 +245,57 @@ export function InstalledModsProvider({ children }: { children: ReactNode }) {
           }
         }
       });
+
+      // Listen for mod-added events - when a mod is manually added to the folder
+      unlistenAdded = await listen<{ modId: string; mod: BaseMod }>("mod-added", (event) => {
+        const { modId, mod } = event.payload;
+        console.log(`[EVENT] Mod added: ${modId}`);
+        
+        setMods(prevMods => {
+          // Check if mod already exists in list
+          const modIndex = prevMods.findIndex(m => m.modId === modId);
+          let updatedMods: BaseMod[];
+          
+          if (modIndex !== -1) {
+            // Mod already exists, update it
+            updatedMods = [...prevMods];
+            updatedMods[modIndex] = mod;
+          } else {
+            // New mod, add it to the list
+            updatedMods = [...prevMods, mod];
+          }
+          
+          // Re-sort the list using shared sorting function
+          // This ensures the mod appears in the correct position according to current sort settings
+          const sortBy = settings.installedModsSortBy || "date";
+          const sortOrder = settings.installedModsSortOrder || "desc";
+          
+          return sortMods(updatedMods, sortBy, sortOrder);
+        });
+      });
+
+      // Listen for mod-removed events - when a mod is manually removed from the folder
+      unlistenRemoved = await listen<{ modId: string }>("mod-removed", (event) => {
+        const { modId } = event.payload;
+        console.log(`[EVENT] Mod removed: ${modId}`);
+        
+        setMods(prevMods => {
+          return prevMods.filter(m => m.modId !== modId);
+        });
+        
+        // Clear any state/errors for this mod
+        setModStates(prev => {
+          const newMap = new Map(prev);
+          newMap.delete(modId);
+          return newMap;
+        });
+        
+        setModErrors(prev => {
+          const newMap = new Map(prev);
+          newMap.delete(modId);
+          return newMap;
+        });
+      });
     };
 
     setupListeners().catch(console.error);
@@ -248,7 +303,33 @@ export function InstalledModsProvider({ children }: { children: ReactNode }) {
     return () => {
       unlistenState?.();
       unlistenUpdated?.();
+      unlistenAdded?.();
+      unlistenRemoved?.();
+      
+      // Stop mod watcher when component unmounts or modsPath changes
+      invoke("stop_mod_watcher").catch(console.error);
     };
+  }, [settings.modsPath]);
+  
+  // Restart mod watcher when modsPath changes
+  useEffect(() => {
+    if (settings.modsPath && settings.modsPath.trim().length > 0) {
+      // Stop existing watcher first
+      invoke("stop_mod_watcher")
+        .then(() => {
+          // Start watcher with new path
+          return invoke("start_mod_watcher", { modsPath: settings.modsPath });
+        })
+        .then(() => {
+          console.log("[INSTALLED_MODS] Restarted mod watcher for new path");
+        })
+        .catch((error) => {
+          console.error("[INSTALLED_MODS] Failed to restart mod watcher:", error);
+        });
+    } else {
+      // Stop watcher if modsPath is empty
+      invoke("stop_mod_watcher").catch(console.error);
+    }
   }, [settings.modsPath]);
 
   const updateMods = async (modsToUpdate: BaseMod[]) => {

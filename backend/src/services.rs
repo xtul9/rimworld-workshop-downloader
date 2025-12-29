@@ -1,13 +1,14 @@
 // Common services and utilities for commands
 
 use std::path::{Path, PathBuf};
-use crate::core::{SteamApi, Downloader};
+use crate::core::{SteamApi, Downloader, mod_watcher::ModWatcher};
 use std::sync::{Arc, OnceLock};
 use tokio::sync::Mutex;
 
 // Shared instances for stateful services
 static STEAM_API: OnceLock<Arc<Mutex<SteamApi>>> = OnceLock::new();
 static DOWNLOADER: OnceLock<Arc<Mutex<Downloader>>> = OnceLock::new();
+static MOD_WATCHER: OnceLock<Arc<Mutex<ModWatcher>>> = OnceLock::new();
 
 /// Get or initialize the shared SteamApi instance
 pub fn get_steam_api() -> Arc<Mutex<SteamApi>> {
@@ -20,6 +21,13 @@ pub fn get_steam_api() -> Arc<Mutex<SteamApi>> {
 pub fn get_downloader() -> Arc<Mutex<Downloader>> {
     DOWNLOADER.get_or_init(|| {
         Arc::new(Mutex::new(Downloader::new(None)))
+    }).clone()
+}
+
+/// Get or initialize the shared ModWatcher instance
+pub fn get_mod_watcher() -> Arc<Mutex<ModWatcher>> {
+    MOD_WATCHER.get_or_init(|| {
+        Arc::new(Mutex::new(ModWatcher::new()))
     }).clone()
 }
 

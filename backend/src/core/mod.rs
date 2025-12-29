@@ -7,6 +7,7 @@ pub mod workshop_client;
 pub mod api_cache;
 pub mod api_rate_limiter;
 pub mod workshop_deserializers;
+pub mod mod_watcher;
 
 // Re-export for backward compatibility and convenience
 pub use mod_scanner::*;

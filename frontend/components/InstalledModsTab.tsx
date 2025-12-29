@@ -6,6 +6,7 @@ import { useFormatting } from "../hooks/useFormatting";
 import { useModal } from "../contexts/ModalContext";
 import { useSettings } from "../contexts/SettingsContext";
 import Select from "./Select";
+import { sortMods } from "../utils/modSorting";
 import "./QueryTab.css";
 
 export default function InstalledModsTab() {
@@ -57,23 +58,8 @@ export default function InstalledModsTab() {
       });
     }
 
-    // Then sort
-    const sorted = [...result].sort((a, b) => {
-      if (sortBy === "name") {
-        const nameA = a.details?.title || a.folder || a.modId || "";
-        const nameB = b.details?.title || b.folder || b.modId || "";
-        const comparison = nameA.localeCompare(nameB, undefined, { sensitivity: "base" });
-        return sortOrder === "asc" ? comparison : -comparison;
-      } else {
-        // Sort by date (time_updated)
-        const dateA = a.details?.time_updated || 0;
-        const dateB = b.details?.time_updated || 0;
-        const comparison = dateA - dateB;
-        return sortOrder === "asc" ? comparison : -comparison;
-      }
-    });
-
-    return sorted;
+    // Then sort using shared sorting function
+    return sortMods(result, sortBy, sortOrder);
   }, [mods, searchQuery, sortBy, sortOrder]);
 
   // Auto-load mods when tab is opened (if not already loaded)
