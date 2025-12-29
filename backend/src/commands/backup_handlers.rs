@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use serde_json;
 use tauri::{command, AppHandle};
-use crate::services::{extract_folder_name, get_mod_watcher};
+use crate::services::extract_folder_name;
 use crate::core::access_check::ensure_directory_access;
 
 /// Check if backup exists for a mod (optimized with spawn_blocking)
@@ -191,10 +191,8 @@ pub async fn restore_backup(
     }
     
     // Ignore this path in mod watcher during restore operation
-    let watcher = get_mod_watcher();
-    let watcher_guard = watcher.lock().await;
-    watcher_guard.ignore_path(normalized_mod_path.clone()).await;
-    drop(watcher_guard);
+    use crate::services::ignore_path_in_watcher;
+    ignore_path_in_watcher(normalized_mod_path.clone()).await;
     
     // Remove current mod folder (async)
     let mod_path_clone = normalized_mod_path.clone();
@@ -223,10 +221,8 @@ pub async fn restore_backup(
     .map_err(|e| format!("Task panicked: {:?}", e))??;
     
     // Stop ignoring this path in mod watcher after restore is complete
-    let watcher = get_mod_watcher();
-    let watcher_guard = watcher.lock().await;
-    watcher_guard.unignore_path(normalized_mod_path.clone()).await;
-    drop(watcher_guard);
+    use crate::services::unignore_path_in_watcher;
+    unignore_path_in_watcher(normalized_mod_path.clone()).await;
     
     Ok(serde_json::json!({
         "message": "Backup restored successfully",

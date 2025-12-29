@@ -7,7 +7,8 @@ use std::collections::{HashSet, HashMap};
 use tokio::sync::Mutex;
 use notify::{Watcher, RecommendedWatcher, RecursiveMode, Event, EventKind};
 use tauri::{AppHandle, Emitter};
-use crate::core::mod_scanner::{list_installed_mods_fast, query_mod_info, find_preview_image, get_mod_last_updated_time, BaseMod, WorkshopFileDetails};
+use crate::core::mod_scanner::{list_installed_mods_fast, query_mod_info, get_mod_last_updated_time, create_workshop_file_details, create_base_mod_from_path};
+use crate::services::canonicalize_path_or_fallback;
 
 pub struct ModWatcher {
     watcher: Option<RecommendedWatcher>,
@@ -34,7 +35,8 @@ impl ModWatcher {
     pub async fn ignore_path(&self, path: PathBuf) {
         let mut ignored = self.ignored_paths.lock().await;
         // Try to canonicalize, but use original if it fails
-        let canonical_path = path.canonicalize().unwrap_or(path.clone());
+        use crate::services::canonicalize_path_or_fallback;
+        let canonical_path = canonicalize_path_or_fallback(&path);
         let canonical_path_clone = canonical_path.clone();
         ignored.insert(canonical_path);
         eprintln!("[ModWatcher] Ignoring path: {:?}", canonical_path_clone);
@@ -44,7 +46,8 @@ impl ModWatcher {
     pub async fn unignore_path(&self, path: PathBuf) {
         let mut ignored = self.ignored_paths.lock().await;
         // Try to canonicalize, but use original if it fails
-        let canonical_path = path.canonicalize().unwrap_or(path.clone());
+        use crate::services::canonicalize_path_or_fallback;
+        let canonical_path = canonicalize_path_or_fallback(&path);
         let canonical_path_clone = canonical_path.clone();
         ignored.remove(&canonical_path);
         eprintln!("[ModWatcher] Stopped ignoring path: {:?}", canonical_path_clone);
@@ -288,7 +291,7 @@ impl ModWatcher {
             EventKind::Create(_) => {
                 // New folder created - check if it's a mod
                 for folder_path in &filtered_paths {
-                    Self::check_single_folder(folder_path, app, mods_path, known_mods, pending_folders).await;
+                    Self::check_single_folder(folder_path, app, mods_path, known_mods, pending_folders, false).await;
                 }
             }
             EventKind::Remove(_) => {
@@ -458,7 +461,7 @@ impl ModWatcher {
                                 if pending.contains(folder_path) {
                                     // This folder is pending - check if it's now a mod
                                     drop(pending);
-                                    Self::check_single_folder(folder_path, app, mods_path, known_mods, pending_folders).await;
+                                    Self::check_single_folder(folder_path, app, mods_path, known_mods, pending_folders, false).await;
                                 }
                             }
                         }
@@ -470,12 +473,15 @@ impl ModWatcher {
     }
     
     /// Check a single folder to see if it's a mod
+    /// `use_current_time` - if true, use current time for time_updated (for restored mods)
+    ///                      if false, use time from folder modification time or .lastupdated file
     async fn check_single_folder(
         folder_path: &Path,
         app: &AppHandle,
         _mods_path: &Path,
         known_mods: &Arc<Mutex<HashMap<PathBuf, String>>>,
         pending_folders: &Arc<Mutex<HashSet<PathBuf>>>,
+        use_current_time: bool,
     ) {
         // Query mod info for this specific folder (use spawn_blocking to avoid Send issues)
         let folder_path_clone = folder_path.to_path_buf();
@@ -509,10 +515,7 @@ impl ModWatcher {
         }
         
         // Try to canonicalize path for consistent mapping
-        let canonical_path = match folder_path.canonicalize() {
-            Ok(path) => path,
-            Err(_) => folder_path.to_path_buf(), // Fallback to original path if canonicalize fails
-        };
+        let canonical_path = canonicalize_path_or_fallback(folder_path);
         
         // Check if this mod is already known
         let mut known = known_mods.lock().await;
@@ -524,77 +527,41 @@ impl ModWatcher {
             // Different mod_id for same path - update it
         }
         
-        // Create BaseMod from this folder
-        let folder_name = folder_path.file_name()
+        // Get folder name for title
+        let folder_name = folder_path
+            .file_name()
             .and_then(|n| n.to_str())
-            .map(|s| s.to_string());
-        
-        let folder_path_clone_for_image = folder_path.to_path_buf();
-        let folder_path_clone_for_time = folder_path.to_path_buf();
-        
-        // Get preview image
-        let preview_image_path = tokio::task::spawn_blocking(move || {
-            find_preview_image(&folder_path_clone_for_image)
-        }).await.ok().flatten();
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| mod_info.mod_id.clone());
         
         // Create WorkshopFileDetails only for Steam mods (non-steam mods don't have time_updated)
         // Non-steam mods will be sorted by name on the frontend
         let details = if !mod_info.is_non_steam {
-            // For Steam mods, get time_updated from folder modification time or .lastupdated file
-            let time_updated = tokio::task::spawn_blocking(move || {
-                get_mod_last_updated_time(&folder_path_clone_for_time)
-                    .ok()
-                    .and_then(|system_time| {
-                        system_time.duration_since(std::time::UNIX_EPOCH).ok()
-                            .map(|duration| duration.as_secs() as i64)
-                    })
-                    .unwrap_or(0)
-            }).await.ok().unwrap_or(0);
+            let time_updated = if use_current_time {
+                // Use current time for restored mods so they appear at the top
+                tokio::task::spawn_blocking(move || {
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .ok()
+                        .map(|duration| duration.as_secs() as i64)
+                        .unwrap_or(0)
+                }).await.ok().unwrap_or(0)
+            } else {
+                // Get time_updated from folder modification time or .lastupdated file
+                let folder_path_clone_for_time = folder_path.to_path_buf();
+                tokio::task::spawn_blocking(move || {
+                    get_mod_last_updated_time(&folder_path_clone_for_time)
+                        .ok()
+                        .and_then(|system_time| {
+                            system_time.duration_since(std::time::UNIX_EPOCH).ok()
+                                .map(|duration| duration.as_secs() as i64)
+                        })
+                        .unwrap_or(0)
+                }).await.ok().unwrap_or(0)
+            };
             
             if time_updated > 0 {
-            Some(WorkshopFileDetails {
-                publishedfileid: mod_info.mod_id.clone(),
-                result: 1,
-                creator: String::new(),
-                creator_app_id: 294100,
-                consumer_app_id: 294100,
-                filename: String::new(),
-                file_size: 0,
-                file_url: String::new(),
-                hcontent_file: String::new(),
-                preview_url: String::new(),
-                hcontent_preview: String::new(),
-                title: folder_name.clone().unwrap_or_else(|| mod_info.mod_id.clone()),
-                description: String::new(),
-                time_updated,
-                time_created: time_updated,
-                visibility: 0,
-                flags: 0,
-                workshop_file_url: String::new(),
-                workshop_accepted: false,
-                show_subscribe_all: false,
-                num_comments_developer: 0,
-                num_comments_public: 0,
-                banned: false,
-                ban_reason: String::new(),
-                banner: String::new(),
-                can_be_deleted: false,
-                app_name: String::new(),
-                file_type: 0,
-                can_subscribe: false,
-                subscriptions: 0,
-                favorited: 0,
-                followers: 0,
-                lifetime_subscriptions: 0,
-                lifetime_favorited: 0,
-                lifetime_followers: 0,
-                lifetime_playtime: String::new(),
-                lifetime_playtime_sessions: String::new(),
-                views: 0,
-                num_children: 0,
-                num_reports: 0,
-                tags: vec![],
-            })
+                Some(create_workshop_file_details(&mod_info.mod_id, folder_name.clone(), time_updated))
             } else {
                 None
             }
@@ -602,21 +569,24 @@ impl ModWatcher {
             None
         };
         
-        let base_mod = BaseMod {
-            mod_id: mod_info.mod_id.clone(),
-            mod_path: folder_path.to_string_lossy().to_string(),
-            folder: folder_name,
-            details, // Only set for Steam mods (non-steam mods will be sorted by name)
-            updated: None,
-            non_steam_mod: mod_info.is_non_steam,
-            preview_image_path,
-        };
+        // Create BaseMod from this folder
+        let base_mod = create_base_mod_from_path(
+            mod_info.mod_id.clone(),
+            folder_path,
+            details,
+            mod_info.is_non_steam,
+        );
         
         // Add to known mods (map folder path to mod_id)
         known.insert(canonical_path, mod_info.mod_id.clone());
         drop(known);
         
-        eprintln!("[ModWatcher] Mod added: {}", mod_info.mod_id);
+        let log_message = if use_current_time {
+            "[ModWatcher] Mod restored: {}"
+        } else {
+            "[ModWatcher] Mod added: {}"
+        };
+        eprintln!("{}", log_message.replace("{}", &mod_info.mod_id));
         let _ = app.emit("mod-added", serde_json::json!({
             "modId": mod_info.mod_id,
             "mod": base_mod,
@@ -627,151 +597,11 @@ impl ModWatcher {
     async fn check_single_folder_restored(
         folder_path: &Path,
         app: &AppHandle,
-        _mods_path: &Path,
+        mods_path: &Path,
         known_mods: &Arc<Mutex<HashMap<PathBuf, String>>>,
         pending_folders: &Arc<Mutex<HashSet<PathBuf>>>,
     ) {
-        // Query mod info for this specific folder
-        let folder_path_clone = folder_path.to_path_buf();
-        let mod_info_result = tokio::task::spawn_blocking(move || {
-            query_mod_info(&folder_path_clone).map_err(|e| e.to_string())
-        }).await;
-        
-        let mod_info = match mod_info_result {
-            Ok(Ok(Some(info))) => info,
-            Ok(Ok(None)) => {
-                // Not a mod yet - add to pending folders for retry
-                let mut pending = pending_folders.lock().await;
-                pending.insert(folder_path.to_path_buf());
-                eprintln!("[ModWatcher] Folder {:?} is not a mod yet, adding to pending", folder_path);
-                return;
-            }
-            Ok(Err(e)) => {
-                eprintln!("[ModWatcher] Error querying mod info for {:?}: {}", folder_path, e);
-                return;
-            }
-            Err(e) => {
-                eprintln!("[ModWatcher] Task error for {:?}: {}", folder_path, e);
-                return;
-            }
-        };
-        
-        // Remove from pending folders if it was there
-        {
-            let mut pending = pending_folders.lock().await;
-            pending.remove(folder_path);
-        }
-        
-        // Try to canonicalize path for consistent mapping
-        let canonical_path = match folder_path.canonicalize() {
-            Ok(path) => path,
-            Err(_) => folder_path.to_path_buf(), // Fallback to original path if canonicalize fails
-        };
-        
-        // Check if this mod is already known
-        let mut known = known_mods.lock().await;
-        if let Some(existing_mod_id) = known.get(&canonical_path) {
-            if existing_mod_id == &mod_info.mod_id {
-                // Already known with same mod_id, skip
-                return;
-            }
-            // Different mod_id for same path - update it
-        }
-        
-        // Create BaseMod from this folder
-        let folder_name = folder_path.file_name()
-            .and_then(|n| n.to_str())
-            .map(|s| s.to_string());
-        
-        let folder_path_clone_for_image = folder_path.to_path_buf();
-        
-        // Get preview image
-        let preview_image_path = tokio::task::spawn_blocking(move || {
-            find_preview_image(&folder_path_clone_for_image)
-        }).await.ok().flatten();
-        
-        // Create WorkshopFileDetails only for Steam mods (non-steam mods don't have time_updated)
-        // Non-steam mods will be sorted by name on the frontend
-        let details = if !mod_info.is_non_steam {
-            // For Steam mods, use current time for restored mods so they appear at the top
-            let time_updated = tokio::task::spawn_blocking(move || {
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .ok()
-                    .map(|duration| duration.as_secs() as i64)
-                    .unwrap_or(0)
-            }).await.ok().unwrap_or(0);
-            
-            if time_updated > 0 {
-            Some(WorkshopFileDetails {
-                publishedfileid: mod_info.mod_id.clone(),
-                result: 1,
-                creator: String::new(),
-                creator_app_id: 294100,
-                consumer_app_id: 294100,
-                filename: String::new(),
-                file_size: 0,
-                file_url: String::new(),
-                hcontent_file: String::new(),
-                preview_url: String::new(),
-                hcontent_preview: String::new(),
-                title: folder_name.clone().unwrap_or_else(|| mod_info.mod_id.clone()),
-                description: String::new(),
-                time_updated,
-                time_created: time_updated,
-                visibility: 0,
-                flags: 0,
-                workshop_file_url: String::new(),
-                workshop_accepted: false,
-                show_subscribe_all: false,
-                num_comments_developer: 0,
-                num_comments_public: 0,
-                banned: false,
-                ban_reason: String::new(),
-                banner: String::new(),
-                can_be_deleted: false,
-                app_name: String::new(),
-                file_type: 0,
-                can_subscribe: false,
-                subscriptions: 0,
-                favorited: 0,
-                followers: 0,
-                lifetime_subscriptions: 0,
-                lifetime_favorited: 0,
-                lifetime_followers: 0,
-                lifetime_playtime: String::new(),
-                lifetime_playtime_sessions: String::new(),
-                views: 0,
-                num_children: 0,
-                num_reports: 0,
-                tags: vec![],
-            })
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-        
-        let base_mod = BaseMod {
-            mod_id: mod_info.mod_id.clone(),
-            mod_path: folder_path.to_string_lossy().to_string(),
-            folder: folder_name,
-            details, // Only set for Steam mods (non-steam mods will be sorted by name)
-            updated: None,
-            non_steam_mod: mod_info.is_non_steam,
-            preview_image_path,
-        };
-        
-        // Add to known mods (map folder path to mod_id)
-        known.insert(canonical_path, mod_info.mod_id.clone());
-        drop(known);
-        
-        eprintln!("[ModWatcher] Mod restored: {}", mod_info.mod_id);
-        let _ = app.emit("mod-added", serde_json::json!({
-            "modId": mod_info.mod_id,
-            "mod": base_mod,
-        }));
+        Self::check_single_folder(folder_path, app, mods_path, known_mods, pending_folders, true).await;
     }
     
     
@@ -806,7 +636,7 @@ impl ModWatcher {
             }
             drop(ignored_guard);
             
-            Self::check_single_folder(&folder_path, app, mods_path, known_mods, pending_folders).await;
+            Self::check_single_folder(&folder_path, app, mods_path, known_mods, pending_folders, false).await;
         }
         
         // Verify all known mods still exist (handles cases where events were missed)

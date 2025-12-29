@@ -63,6 +63,30 @@ pub fn get_mods_path_from_mod_path(mod_path: &Path) -> Result<PathBuf, String> {
         .map(|p| p.to_path_buf())
 }
 
+/// Canonicalize a path, falling back to original path if canonicalization fails
+pub fn canonicalize_path_or_fallback(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// Convert Path to String (using to_string_lossy)
+pub fn path_to_string(path: &Path) -> String {
+    path.to_string_lossy().to_string()
+}
+
+/// Ignore a path in mod watcher (helper function to reduce duplication)
+pub async fn ignore_path_in_watcher(path: PathBuf) {
+    let watcher = get_mod_watcher();
+    let guard = watcher.lock().await;
+    guard.ignore_path(path).await;
+}
+
+/// Stop ignoring a path in mod watcher (helper function to reduce duplication)
+pub async fn unignore_path_in_watcher(path: PathBuf) {
+    let watcher = get_mod_watcher();
+    let guard = watcher.lock().await;
+    guard.unignore_path(path).await;
+}
+
 /// Find all mod folders with the given mod ID
 pub async fn find_all_mod_folders_with_id(mods_path: &Path, mod_id: &str) -> Result<Vec<PathBuf>, String> {
     use crate::core::mod_scanner::query_mod_id;
@@ -162,37 +186,30 @@ pub async fn fetch_mod_times_updated(mod_ids: &[String]) -> std::collections::Ha
     mod_id_to_time_updated
 }
 
-/// Write .ignoredupdate file for a mod folder
-pub async fn write_ignore_update_file(folder_path: PathBuf, time_updated: i64) {
+/// Write a timestamp file in mod's About folder (shared implementation for .ignoredupdate and .lastupdated)
+async fn write_mod_timestamp_file(folder_path: PathBuf, filename: String, timestamp: i64) {
     let about_path = folder_path.join("About");
-    let ignore_update_path = about_path.join(".ignoredupdate");
-    let time_str = time_updated.to_string();
+    let file_path = about_path.join(&filename);
+    let time_str = timestamp.to_string();
     
     tokio::task::spawn_blocking(move || {
         if let Err(e) = std::fs::create_dir_all(&about_path) {
             eprintln!("Failed to create About directory: {}", e);
             return;
         }
-        if let Err(e) = std::fs::write(&ignore_update_path, time_str) {
-            eprintln!("Failed to write .ignoredupdate file: {}", e);
+        if let Err(e) = std::fs::write(&file_path, time_str) {
+            eprintln!("Failed to write {} file: {}", filename, e);
         }
     }).await.ok();
 }
 
+/// Write .ignoredupdate file for a mod folder
+pub async fn write_ignore_update_file(folder_path: PathBuf, time_updated: i64) {
+    write_mod_timestamp_file(folder_path, ".ignoredupdate".to_string(), time_updated).await;
+}
+
 /// Write .lastupdated file for a mod folder
 pub async fn write_last_updated_file(folder_path: PathBuf, time_updated: i64) {
-    let about_path = folder_path.join("About");
-    let last_updated_path = about_path.join(".lastupdated");
-    let time_str = time_updated.to_string();
-    
-    tokio::task::spawn_blocking(move || {
-        if let Err(e) = std::fs::create_dir_all(&about_path) {
-            eprintln!("Failed to create About directory: {}", e);
-            return;
-        }
-        if let Err(e) = std::fs::write(&last_updated_path, time_str) {
-            eprintln!("Failed to write .lastupdated file: {}", e);
-        }
-    }).await.ok();
+    write_mod_timestamp_file(folder_path, ".lastupdated".to_string(), time_updated).await;
 }
 
