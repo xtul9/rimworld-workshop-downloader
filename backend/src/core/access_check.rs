@@ -55,7 +55,6 @@ pub fn check_directory_access(path: &Path) -> Result<(), AccessError> {
         Err(_) => false,
     };
 
-    
     if !can_write {
         return Err(AccessError {
             path: path.to_path_buf(),

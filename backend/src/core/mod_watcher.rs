@@ -15,6 +15,7 @@ pub struct ModWatcher {
     app_handle: Option<AppHandle>,
     known_mods: Arc<Mutex<HashMap<PathBuf, String>>>, // Track folder path -> mod_id mapping to detect additions/removals
     pending_folders: Arc<Mutex<HashSet<PathBuf>>>, // Track folders that might become mods (don't have About/ yet)
+    ignored_paths: Arc<Mutex<HashSet<PathBuf>>>, // Track paths to ignore during app operations (updates, restores, etc.)
 }
 
 impl ModWatcher {
@@ -25,7 +26,28 @@ impl ModWatcher {
             app_handle: None,
             known_mods: Arc::new(Mutex::new(HashMap::new())),
             pending_folders: Arc::new(Mutex::new(HashSet::new())),
+            ignored_paths: Arc::new(Mutex::new(HashSet::new())),
         }
+    }
+
+    /// Ignore events for a specific path (used during app operations like updates/restores)
+    pub async fn ignore_path(&self, path: PathBuf) {
+        let mut ignored = self.ignored_paths.lock().await;
+        // Try to canonicalize, but use original if it fails
+        let canonical_path = path.canonicalize().unwrap_or(path.clone());
+        let canonical_path_clone = canonical_path.clone();
+        ignored.insert(canonical_path);
+        eprintln!("[ModWatcher] Ignoring path: {:?}", canonical_path_clone);
+    }
+
+    /// Stop ignoring events for a specific path
+    pub async fn unignore_path(&self, path: PathBuf) {
+        let mut ignored = self.ignored_paths.lock().await;
+        // Try to canonicalize, but use original if it fails
+        let canonical_path = path.canonicalize().unwrap_or(path.clone());
+        let canonical_path_clone = canonical_path.clone();
+        ignored.remove(&canonical_path);
+        eprintln!("[ModWatcher] Stopped ignoring path: {:?}", canonical_path_clone);
     }
 
     /// Start watching the mods folder for changes
@@ -72,11 +94,12 @@ impl ModWatcher {
         let canonical_mods_path_clone = canonical_mods_path.clone();
         let known_mods_clone = self.known_mods.clone();
         let pending_folders_clone = self.pending_folders.clone();
+        let ignored_paths_clone = self.ignored_paths.clone();
 
         // Spawn task to process file system events
         tokio::spawn(async move {
             while let Some(event) = rx.recv().await {
-                Self::process_fs_event(event, &app_clone, &canonical_mods_path_clone, &known_mods_clone, &pending_folders_clone).await;
+                Self::process_fs_event(event, &app_clone, &canonical_mods_path_clone, &known_mods_clone, &pending_folders_clone, &ignored_paths_clone).await;
             }
         });
         
@@ -85,11 +108,12 @@ impl ModWatcher {
         let canonical_mods_path_clone_retry = canonical_mods_path.clone();
         let known_mods_clone_retry = self.known_mods.clone();
         let pending_folders_clone_retry = self.pending_folders.clone();
+        let ignored_paths_clone_retry = self.ignored_paths.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
             loop {
                 interval.tick().await;
-                Self::check_pending_folders(&app_clone_retry, &canonical_mods_path_clone_retry, &known_mods_clone_retry, &pending_folders_clone_retry).await;
+                Self::check_pending_folders(&app_clone_retry, &canonical_mods_path_clone_retry, &known_mods_clone_retry, &pending_folders_clone_retry, &ignored_paths_clone_retry).await;
             }
         });
 
@@ -131,6 +155,10 @@ impl ModWatcher {
             let mut pending = self.pending_folders.lock().await;
             pending.clear();
         }
+        {
+            let mut ignored = self.ignored_paths.lock().await;
+            ignored.clear();
+        }
     }
 
     /// Process file system event and emit mod-added/mod-removed events
@@ -140,7 +168,21 @@ impl ModWatcher {
         mods_path: &Path,
         known_mods: &Arc<Mutex<HashMap<PathBuf, String>>>,
         pending_folders: &Arc<Mutex<HashSet<PathBuf>>>,
+        ignored_paths: &Arc<Mutex<HashSet<PathBuf>>>,
     ) {
+        // Filter out events for temporary access test files
+        let is_access_test_file = event.paths.iter().any(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .map(|s| s == ".access_test_temp_file")
+                .unwrap_or(false)
+        });
+        
+        if is_access_test_file {
+            // Silently ignore access test file events
+            return;
+        }
+        
         eprintln!("[ModWatcher] Received event: {:?}, paths: {:?}", event.kind, event.paths);
         
         // Check if the event is for a directory (mod folder) directly under mods_path
@@ -207,7 +249,37 @@ impl ModWatcher {
             return;
         }
 
-        eprintln!("[ModWatcher] Processing {} path(s) for event {:?}", paths.len(), event.kind);
+        // Check if any of the paths are being ignored (app operations in progress)
+        let ignored = ignored_paths.lock().await;
+        let filtered_paths: Vec<PathBuf> = paths.into_iter()
+            .filter(|p| {
+                // Check if path or any parent is ignored
+                let mut current = p.clone();
+                loop {
+                    if ignored.contains(&current) {
+                        eprintln!("[ModWatcher] Ignoring event for path (app operation in progress): {:?}", p);
+                        return false;
+                    }
+                    if let Some(parent) = current.parent() {
+                        if parent == mods_path {
+                            break; // Reached mods_path, stop checking
+                        }
+                        current = parent.to_path_buf();
+                    } else {
+                        break;
+                    }
+                }
+                true
+            })
+            .collect();
+        drop(ignored);
+
+        if filtered_paths.is_empty() {
+            eprintln!("[ModWatcher] All paths ignored (app operations in progress)");
+            return;
+        }
+
+        eprintln!("[ModWatcher] Processing {} path(s) for event {:?}", filtered_paths.len(), event.kind);
 
         // Small delay to allow file system operations to complete
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
@@ -215,20 +287,20 @@ impl ModWatcher {
         match event.kind {
             EventKind::Create(_) => {
                 // New folder created - check if it's a mod
-                for folder_path in &paths {
+                for folder_path in &filtered_paths {
                     Self::check_single_folder(folder_path, app, mods_path, known_mods, pending_folders).await;
                 }
             }
             EventKind::Remove(_) => {
                 // Folder removed - check if it was a known mod
-                eprintln!("[ModWatcher] Remove event detected for paths: {:?}", paths);
+                eprintln!("[ModWatcher] Remove event detected for paths: {:?}", filtered_paths);
                 let mut known = known_mods.lock().await;
                 let mut pending = pending_folders.lock().await;
                 
                 eprintln!("[ModWatcher] Known mods count: {}", known.len());
                 
                 // Remove from pending folders
-                for folder_path in &paths {
+                for folder_path in &filtered_paths {
                     pending.remove(folder_path);
                     
                     // Try to find matching path in known_mods
@@ -301,7 +373,6 @@ impl ModWatcher {
                         }));
                     } else {
                         eprintln!("[ModWatcher] Folder removed but not found in known_mods: {:?}", folder_path);
-                        eprintln!("[ModWatcher] Available known mod paths: {:?}", known.keys().collect::<Vec<_>>());
                     }
                 }
             }
@@ -318,7 +389,7 @@ impl ModWatcher {
                         let mut known = known_mods.lock().await;
                         let mut pending = pending_folders.lock().await;
                         
-                        for folder_path in &paths {
+                        for folder_path in &filtered_paths {
                             pending.remove(folder_path);
                             
                             // Find and remove from known_mods
@@ -362,7 +433,7 @@ impl ModWatcher {
                     notify::event::ModifyKind::Name(notify::event::RenameMode::To) => {
                         // Folder was restored/created - check if it's a mod
                         eprintln!("[ModWatcher] Modify(Name(To)) event - folder restored/created");
-                        for folder_path in &paths {
+                        for folder_path in &filtered_paths {
                             // Check if folder exists and is a mod
                             if folder_path.exists() {
                                 // Check if it's already in known_mods (might have been restored)
@@ -381,7 +452,7 @@ impl ModWatcher {
                     }
                     _ => {
                         // Other modifications - might be adding About/ folder
-                        for folder_path in &paths {
+                        for folder_path in &filtered_paths {
                             if folder_path.exists() {
                                 let pending = pending_folders.lock().await;
                                 if pending.contains(folder_path) {
@@ -711,6 +782,7 @@ impl ModWatcher {
         mods_path: &Path,
         known_mods: &Arc<Mutex<HashMap<PathBuf, String>>>,
         pending_folders: &Arc<Mutex<HashSet<PathBuf>>>,
+        ignored_paths: &Arc<Mutex<HashSet<PathBuf>>>,
     ) {
         // Check pending folders
         let folders_to_check: Vec<PathBuf> = {
@@ -725,6 +797,14 @@ impl ModWatcher {
                 pending.remove(&folder_path);
                 continue;
             }
+            
+            // Check if path is ignored (app operation in progress)
+            let ignored_guard: tokio::sync::MutexGuard<'_, HashSet<PathBuf>> = ignored_paths.lock().await;
+            if ignored_guard.contains(&folder_path) {
+                drop(ignored_guard);
+                continue; // Skip if being ignored
+            }
+            drop(ignored_guard);
             
             Self::check_single_folder(&folder_path, app, mods_path, known_mods, pending_folders).await;
         }

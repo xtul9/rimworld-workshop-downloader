@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::fs;
 use crate::core::mod_scanner::query_mod_id;
+use crate::services::get_mod_watcher;
 use quick_xml::events::Event;
 use quick_xml::Reader;
 
@@ -201,6 +202,12 @@ impl ModUpdater {
             }
         }
 
+        // Ignore this path in mod watcher during update operation
+        let watcher = get_mod_watcher();
+        let watcher_guard = watcher.lock().await;
+        watcher_guard.ignore_path(mod_destination_path.clone()).await;
+        drop(watcher_guard);
+
         // Remove existing mod folder if it exists (async)
         if mod_destination_path.exists() {
             let path_to_remove = mod_destination_path.clone();
@@ -242,6 +249,12 @@ impl ModUpdater {
         // Ensure PublishedFileId.txt exists after copying
         Self::ensure_published_file_id(&mod_destination_path, mod_id).await
             .map_err(|e| format!("Failed to create PublishedFileId.txt: {}", e))?;
+
+        // Stop ignoring this path in mod watcher after update is complete
+        let watcher = get_mod_watcher();
+        let watcher_guard = watcher.lock().await;
+        watcher_guard.unignore_path(mod_destination_path.clone()).await;
+        drop(watcher_guard);
 
         eprintln!("[ModUpdater] Mod {} copied successfully to {:?}", mod_id, mod_destination_path);
 
