@@ -53,7 +53,7 @@ export function ModsProvider({ children }: { children: ReactNode }) {
   // Computed: isModUpdating returns true if specific mod is updating
   const isModUpdating = (modId: string) => {
     const state = modStates.get(modId);
-    return state !== null && state !== "completed" && state !== "failed";
+    return state !== null && state !== "completed" && state !== "failed" && state !== "cancelled";
   };
 
   // Listen for real-time download and update events

@@ -54,7 +54,7 @@ export function InstalledModsProvider({ children }: { children: ReactNode }) {
   // Computed: isModUpdating returns true if specific mod is updating
   const isModUpdating = (modId: string) => {
     const state = modStates.get(modId);
-    return state !== null && state !== "completed" && state !== "failed";
+    return state !== null && state !== "completed" && state !== "failed" && state !== "cancelled";
   };
 
   const loadInstalledMods = async (modsPath: string) => {
