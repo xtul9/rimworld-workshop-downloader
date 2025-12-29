@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { BaseMod } from "../types";
 import { useModsPath } from "../contexts/ModsPathContext";
@@ -7,6 +7,7 @@ import { useAccessError } from "../contexts/AccessErrorContext";
 import { useModal } from "../contexts/ModalContext";
 import { useFormatting } from "../hooks/useFormatting";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import "./DownloadTab.css";
 
 interface ModInput {
@@ -17,7 +18,7 @@ interface ModInput {
   size?: number;
   isCollection?: boolean;
   collectionMods?: any[];
-  status: "empty" | "loading" | "ready" | "downloading" | "completed" | "error";
+  status: "empty" | "loading" | "ready" | "downloading" | "completed" | "error" | "cancelled";
   error?: string;
 }
 
@@ -38,6 +39,82 @@ export default function DownloadTab() {
   const [showImportModal, setShowImportModal] = useState(false);
   const [importText, setImportText] = useState("");
   const inputRefs = useRef<{ [key: string]: HTMLInputElement | null }>({});
+
+  // Listen for real-time download events from backend
+  useEffect(() => {
+    let unlistenState: (() => void) | undefined;
+    let unlistenUpdated: (() => void) | undefined;
+
+    const setupListeners = async () => {
+      // Listen for mod-state events - this is the PRIMARY event for all state changes
+      unlistenState = await listen<{ modId: string; state: string; error?: string; retryAttempt?: number; maxRetries?: number }>("mod-state", (event) => {
+        const { modId, state, error: eventError } = event.payload;
+        console.log(`[DOWNLOAD_TAB] Mod state changed: ${modId} -> ${state}`);
+        
+        // Update mod input status based on backend events
+        setModInputs(prev => {
+          return prev.map(input => {
+            // Find mod by modId
+            if (input.modId === modId) {
+              // Map backend states to frontend states
+              if (state === "queued" || state === "retry-queued") {
+                return { ...input, status: "downloading" as const };
+              } else if (state === "downloading" || state === "installing") {
+                return { ...input, status: "downloading" as const };
+              } else if (state === "completed") {
+                return { ...input, status: "completed" as const };
+              } else if (state === "failed") {
+                // Only mark as error if not already cancelled
+                if (input.status !== "cancelled") {
+                  return { 
+                    ...input, 
+                    status: "error" as const,
+                    error: eventError || "Download failed"
+                  };
+                }
+              } else if (state === "cancelled") {
+                return { ...input, status: "cancelled" as const };
+              }
+            }
+            return input;
+          });
+        });
+      });
+
+      // Listen for mod-updated events - this marks the end of installation
+      unlistenUpdated = await listen<{ modId: string; success: boolean; error?: string }>("mod-updated", (event) => {
+        const { modId, success, error } = event.payload;
+        console.log(`[DOWNLOAD_TAB] Mod updated: ${modId}, success: ${success}`);
+        
+        setModInputs(prev => {
+          return prev.map(input => {
+            if (input.modId === modId) {
+              if (success) {
+                return { ...input, status: "completed" as const };
+              } else {
+                // Only mark as error if not already cancelled
+                if (input.status !== "cancelled") {
+                  return { 
+                    ...input, 
+                    status: "error" as const,
+                    error: error || "Download failed"
+                  };
+                }
+              }
+            }
+            return input;
+          });
+        });
+      });
+    };
+
+    setupListeners().catch(console.error);
+
+    return () => {
+      unlistenState?.();
+      unlistenUpdated?.();
+    };
+  }, []);
 
   const extractModId = (text: string): string | null => {
     // Try to extract ID from URL (both /sharedfiles/ and /workshop/ paths)
@@ -230,8 +307,30 @@ export default function DownloadTab() {
     });
   };
 
+  const handleCancelDownload = async () => {
+    try {
+      await invoke("cancel_update_mods");
+      console.log("[DOWNLOAD] Cancellation requested");
+      
+      // Mark all downloading mods as cancelled
+      setModInputs(prev => 
+        prev.map(m => 
+          m.status === "downloading" 
+            ? { ...m, status: "cancelled" as const }
+            : m
+        )
+      );
+      
+      setIsDownloading(false);
+      setDownloadStatus("Download cancelled");
+    } catch (error) {
+      console.error("Failed to cancel download:", error);
+    }
+  };
+
   const handleDownloadAll = async () => {
-    const readyMods = modInputs.filter(m => m.status === "ready" && m.modId);
+    // Include both "ready" and "cancelled" mods (cancelled mods can be retried)
+    const readyMods = modInputs.filter(m => (m.status === "ready" || m.status === "cancelled") && m.modId);
     if (readyMods.length === 0 || isDownloading) return;
 
     if (!permissions.canWrite) {
@@ -243,17 +342,53 @@ export default function DownloadTab() {
       return;
     }
 
+    // Reset cancellation flag before starting download
+    try {
+      await invoke("reset_update_cancel_flag_command");
+    } catch (error) {
+      console.warn("Failed to reset cancellation flag:", error);
+    }
+
     setIsDownloading(true);
     setProgress(0);
     setProgressMax(readyMods.length);
     setDownloadStatus("Starting download...");
+    
+    let successfullyDownloaded = 0;
+    let failedDownloads = 0;
 
     try {
       for (let i = 0; i < readyMods.length; i++) {
+        // Check if download was cancelled before processing each mod
+        try {
+          const isCancelled = await invoke<boolean>("check_update_cancelled");
+          if (isCancelled) {
+            setDownloadStatus("Download cancelled");
+            setIsDownloading(false);
+            // Mark all downloading mods as cancelled
+            setModInputs(prev => 
+              prev.map(m => 
+                m.status === "downloading" 
+                  ? { ...m, status: "cancelled" as const }
+                  : m
+              )
+            );
+            break;
+          }
+        } catch (error) {
+          // If command doesn't exist or fails, continue
+          console.warn("Failed to check cancellation status:", error);
+        }
+        
         const mod = readyMods[i];
         
+        // Set mod status to downloading when starting download
         setModInputs(prev => 
-          prev.map(m => m.id === mod.id ? { ...m, status: "downloading" as const } : m)
+          prev.map(m => 
+            m.id === mod.id 
+              ? { ...m, status: "downloading" as const }
+              : m
+          )
         );
 
         setDownloadStatus(`Downloading: ${mod.title || mod.modId}...`);
@@ -269,6 +404,26 @@ export default function DownloadTab() {
               
               // Download each mod in collection
               for (const file of mod.collectionMods) {
+                // Check cancellation before each mod in collection
+                try {
+                  const isCancelled = await invoke<boolean>("check_update_cancelled");
+                  if (isCancelled) {
+                    setDownloadStatus("Download cancelled");
+                    setIsDownloading(false);
+                    // Mark all downloading mods as cancelled
+                    setModInputs(prev => 
+                      prev.map(m => 
+                        m.status === "downloading" 
+                          ? { ...m, status: "cancelled" as const }
+                          : m
+                      )
+                    );
+                    return;
+                  }
+                } catch (error) {
+                  // Continue if check fails
+                }
+                
                 const modId = file.publishedfileid || file.modId;
                 if (modId && detailsMap[modId] && detailsMap[modId] !== null) {
                   await downloadMod(detailsMap[modId], modsPath);
@@ -289,27 +444,65 @@ export default function DownloadTab() {
             }
           }
 
-          setModInputs(prev => 
-            prev.map(m => m.id === mod.id ? { ...m, status: "completed" as const } : m)
-          );
+          // Status will be updated by backend events (mod-updated or mod-state)
+          // We don't manually set status here to avoid conflicts with event-driven updates
+          successfullyDownloaded++;
         } catch (error) {
           console.error(`Failed to download mod ${mod.modId}:`, error);
-          setModInputs(prev => 
-            prev.map(m => m.id === mod.id ? { 
-              ...m, 
-              status: "error" as const,
-              error: error instanceof Error ? error.message : "Download error"
-            } : m)
-          );
+          
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          
+          // Check if error is due to cancellation
+          const isCancelled = errorMessage.includes("cancelled") || 
+                             errorMessage.includes("Update cancelled") ||
+                             errorMessage.includes("Update cancelled by user");
+          
+          // Update mod status - check current status to avoid overwriting cancelled
+          setModInputs(prev => {
+            const currentMod = prev.find(m => m.id === mod.id);
+            // If mod was already marked as cancelled, don't overwrite it
+            if (currentMod?.status === "cancelled") {
+              return prev;
+            }
+            
+            if (isCancelled) {
+              // Mark as cancelled, not error
+              return prev.map(m => 
+                m.id === mod.id 
+                  ? { ...m, status: "cancelled" as const }
+                  : m
+              );
+            } else {
+              // Mark as error for other failures
+              return prev.map(m => 
+                m.id === mod.id 
+                  ? { ...m, status: "error" as const, error: errorMessage }
+                  : m
+              );
+            }
+          });
+          
+          // Only increment failedDownloads for non-cancelled errors
+          if (!isCancelled) {
+            failedDownloads++;
+          }
         }
 
         setProgress(i + 1);
       }
 
-      setDownloadStatus("Download completed");
-      
-      // Clear mod inputs after successful download
-      setModInputs([{ id: String(Date.now()), value: "", status: "empty" }]);
+      // Only clear mod inputs if all mods were successfully downloaded
+      if (successfullyDownloaded > 0 && failedDownloads === 0) {
+        setDownloadStatus("Download completed");
+        // Clear mod inputs after successful download
+        setModInputs([{ id: String(Date.now()), value: "", status: "empty" }]);
+      } else if (successfullyDownloaded > 0) {
+        setDownloadStatus(`Download completed with ${failedDownloads} error(s)`);
+      } else if (failedDownloads > 0) {
+        setDownloadStatus(`Download failed: ${failedDownloads} error(s)`);
+      } else {
+        setDownloadStatus("Download cancelled or no mods processed");
+      }
     } catch (error) {
       console.error("Failed to download mods:", error);
       setDownloadStatus("Error during download");
@@ -645,7 +838,7 @@ export default function DownloadTab() {
     }
   };
 
-  const readyModsCount = modInputs.filter(m => m.status === "ready").length;
+  const readyModsCount = modInputs.filter(m => m.status === "ready" || m.status === "cancelled").length;
 
   return (
     <div className="download-tab">
@@ -735,6 +928,12 @@ export default function DownloadTab() {
                 </div>
               )}
               
+              {input.status === "cancelled" && (
+                <div className="mod-status cancelled">
+                  ⏸ Cancelled
+                </div>
+              )}
+              
               {input.status === "downloading" && (
                 <div className="mod-status downloading">
                   ⏳ Downloading: {input.title || input.modId}...
@@ -752,14 +951,26 @@ export default function DownloadTab() {
 
         {readyModsCount > 0 && (
           <div className="download-actions">
-            <button
-              onClick={handleDownloadAll}
-              disabled={isDownloading || !modsPath || !permissions.canWrite}
-              title={!permissions.canWrite ? "Write access required to download mods" : undefined}
-              className="download-all-button"
-            >
-              {isDownloading ? "Downloading..." : `Download all (${readyModsCount})`}
-            </button>
+            {isDownloading ? (
+              <button
+                onClick={handleCancelDownload}
+                disabled={!isDownloading}
+                title="Cancel ongoing download"
+                className="download-all-button"
+                style={{ backgroundColor: "#d32f2f" }}
+              >
+                Cancel Download
+              </button>
+            ) : (
+              <button
+                onClick={handleDownloadAll}
+                disabled={isDownloading || !modsPath || !permissions.canWrite}
+                title={!permissions.canWrite ? "Write access required to download mods" : undefined}
+                className="download-all-button"
+              >
+                Download all ({readyModsCount})
+              </button>
+            )}
           </div>
         )}
       </div>

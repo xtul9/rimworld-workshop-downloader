@@ -21,6 +21,7 @@ export default function InstalledModsTab() {
     hasLoaded,
     loadInstalledMods,
     updateMods,
+    cancelUpdateMods,
   } = useInstalledMods();
   const { formatSize } = useFormatting();
   const { permissions } = useAccessError();
@@ -228,14 +229,28 @@ export default function InstalledModsTab() {
             )}
           </span>
           {!isLoading && !error && filteredAndSortedMods.length > 0 && (
-            <button
-              onClick={handleForceUpdateAll}
-              disabled={isLoading || isUpdating || filteredAndSortedMods.filter(m => !m.updated).length === 0 || !permissions.canWrite}
-              title={!permissions.canWrite ? "Write access required to update mods" : "Force update all mods"}
-              className="force-update-all-button"
-            >
-              Force Update All ({filteredAndSortedMods.filter(m => !m.updated).length})
-            </button>
+            <>
+              {isUpdating ? (
+                <button
+                  onClick={cancelUpdateMods}
+                  disabled={!isUpdating}
+                  title="Cancel ongoing update"
+                  className="force-update-all-button"
+                  style={{ backgroundColor: "#d32f2f" }}
+                >
+                  Cancel Update
+                </button>
+              ) : (
+                <button
+                  onClick={handleForceUpdateAll}
+                  disabled={isLoading || isUpdating || filteredAndSortedMods.filter(m => !m.updated).length === 0 || !permissions.canWrite}
+                  title={!permissions.canWrite ? "Write access required to update mods" : "Force update all mods"}
+                  className="force-update-all-button"
+                >
+                  Force Update All ({filteredAndSortedMods.filter(m => !m.updated).length})
+                </button>
+              )}
+            </>
           )}
         </div>
         <ModList

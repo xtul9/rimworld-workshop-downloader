@@ -218,6 +218,11 @@ impl ModUpdater {
 
         // Create backup if requested
         if create_backup {
+            // Check if update was cancelled before starting backup
+            if is_update_cancelled() {
+                return Err("Update cancelled by user".to_string());
+            }
+            
             if let Some(backup_dir) = backup_directory {
                 fs::create_dir_all(backup_dir)
                     .map_err(|e| format!("Failed to create backup directory: {}", e))?;
@@ -239,7 +244,7 @@ impl ModUpdater {
         }
 
         // Ignore this path in mod watcher during update operation
-        use crate::services::{ignore_path_in_watcher, WatcherIgnoreGuard};
+        use crate::services::{ignore_path_in_watcher, WatcherIgnoreGuard, is_update_cancelled};
         ignore_path_in_watcher(mod_destination_path.clone()).await;
         let _guard = WatcherIgnoreGuard::new(mod_destination_path.clone()).await;
 
@@ -249,6 +254,11 @@ impl ModUpdater {
         // Remove existing mod folder if it exists (async with retry)
         // Use retry logic to handle cases where mod watcher or other processes have files open
         if mod_destination_path.exists() {
+            // Check if update was cancelled before removing existing folder
+            if is_update_cancelled() {
+                return Err("Update cancelled by user".to_string());
+            }
+            
             Self::remove_dir_with_retry(&mod_destination_path, 3, 200).await
                 .map_err(|e| format!("Failed to remove existing mod folder: {}", e))?;
         }
@@ -270,6 +280,11 @@ impl ModUpdater {
         // Verify source mod is complete before copying
         if !Self::verify_mod_complete(&source_path) {
             return Err(format!("Source mod at {:?} appears incomplete or invalid. Refusing to copy.", source_path));
+        }
+
+        // Check if update was cancelled before starting copy operation
+        if is_update_cancelled() {
+            return Err("Update cancelled by user".to_string());
         }
 
         eprintln!("[ModUpdater] Copying mod from {:?} to {:?}", source_path, mod_destination_path);

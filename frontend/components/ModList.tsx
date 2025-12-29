@@ -536,8 +536,8 @@ export default function ModList({ onUpdateSelected, modsPath, useInstalledModsCo
               const modError = modErrors?.get(mod.modId);
               
               // isUpdating is computed from modState - if mod has an active state, it's updating
-              // Only show as updating if mod has an active state (not null, not "completed", not "failed")
-              const isUpdating = modState !== null && modState !== "completed" && modState !== "failed";
+              // Only show as updating if mod has an active state (not null, not "completed", not "failed", not "cancelled")
+              const isUpdating = modState !== null && modState !== "completed" && modState !== "failed" && modState !== "cancelled";
 
               const imageSrc = mod.previewImagePath ? convertFileSrc(mod.previewImagePath) : undefined;
               

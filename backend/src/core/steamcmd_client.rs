@@ -13,6 +13,7 @@ pub struct Downloader {
     steamcmd_path: PathBuf,
     download_path: PathBuf,
     active_downloads: std::collections::HashSet<String>,
+    active_process_pids: Arc<tokio::sync::Mutex<Vec<u32>>>, 
 }
 
 impl Downloader {
@@ -24,7 +25,26 @@ impl Downloader {
             steamcmd_path,
             download_path,
             active_downloads: std::collections::HashSet::new(),
+            active_process_pids: Arc::new(tokio::sync::Mutex::new(Vec::new())),
         }
+    }
+    
+    /// Kill only our tracked SteamCMD processes
+    pub async fn kill_our_processes(&mut self) {
+        let pids: Vec<u32> = {
+            let mut pid_list = self.active_process_pids.lock().await;
+            pid_list.drain(..).collect()
+        };
+        
+        eprintln!("[Downloader] Killing {} tracked SteamCMD process(es) by PID", pids.len());
+        
+        // Ensure both lists are cleared
+        {
+            let mut pid_list = self.active_process_pids.lock().await;
+            pid_list.clear();
+        }
+        
+        eprintln!("[Downloader] All process trackers cleared");
     }
 
     /// Get the download path where mods are downloaded
@@ -201,6 +221,9 @@ impl Downloader {
         let max_instances = max_instances.unwrap_or(DEFAULT_MAX_INSTANCES);
         let (tx, rx) = mpsc::channel(100); // Buffer up to 100 mods
         
+        // Clone Arc for tracking process PIDs in spawned tasks
+        let process_pids_tracker = self.active_process_pids.clone();
+        
         // Clone necessary data for background task
         let mod_ids_clone = mod_ids.to_vec();
         let mod_sizes_clone = mod_sizes.cloned();
@@ -209,6 +232,7 @@ impl Downloader {
         let download_path = self.download_path.clone();
         let tx_clone = tx.clone();
         let max_instances_clone = max_instances;
+        let process_pids_tracker_clone = process_pids_tracker.clone();
         
         // Spawn background task to handle downloads
         // This allows the function to return the channel immediately
@@ -218,6 +242,14 @@ impl Downloader {
             let mut retry_count = 0;
             
             while !remaining_mod_ids.is_empty() && retry_count <= MAX_RETRIES {
+                // Check if update was cancelled
+                if crate::services::is_update_cancelled() {
+                    eprintln!("[Downloader] Update cancelled, stopping download retry loop");
+                    // Close channel to signal cancellation
+                    drop(tx_clone);
+                    return;
+                }
+                
                 if retry_count > 0 {
                     eprintln!("[Downloader] Retry attempt {}: {} mod(s) remaining (attempt {}/{})", 
                         retry_count, remaining_mod_ids.len(), retry_count, MAX_RETRIES);
@@ -263,6 +295,7 @@ impl Downloader {
                 mods_to_retry_for_attempt.as_ref(),
                 Some(tx_clone.clone()),
                 max_instances_clone,
+                process_pids_tracker_clone.clone(),
             ).await;
             
             match attempt_result {
@@ -328,6 +361,14 @@ impl Downloader {
                     retry_count += 1;
                 }
                 Err(e) => {
+                    // Check if error is due to cancellation - if so, don't retry
+                    if e.contains("cancelled") || e.contains("Update cancelled by user") {
+                        eprintln!("[Downloader] Download cancelled by user, stopping retry loop");
+                        // Close channel to signal cancellation
+                        drop(tx_clone);
+                        return;
+                    }
+                    
                     eprintln!("[Downloader] Download attempt {} failed: {}", retry_count + 1, e);
                     retry_count += 1;
                     
@@ -379,6 +420,7 @@ impl Downloader {
         mods_to_retry: Option<&std::collections::HashSet<String>>,
         _tx: Option<mpsc::Sender<Result<DownloadedMod, String>>>,
         max_instances: usize,
+        process_pids_tracker: Arc<tokio::sync::Mutex<Vec<u32>>>,
     ) -> Result<(Vec<DownloadedMod>, Vec<String>), String> {
         // Convert mods_to_retry to owned Option for passing to download_mods_batch
         let mods_to_retry_owned = mods_to_retry.map(|set| set.clone());
@@ -431,6 +473,7 @@ impl Downloader {
             
             let mods_to_retry_for_batch = mods_to_retry_owned.clone();
             let tx_for_batch = _tx.clone();
+            let process_pids_tracker_for_batch = process_pids_tracker.clone();
             let future = Self::download_mods_batch(
                 steamcmd_executable.clone(),
                 steamcmd_path_clone,
@@ -440,6 +483,7 @@ impl Downloader {
                 app.cloned(),
                 mods_to_retry_for_batch,
                 tx_for_batch,
+                process_pids_tracker_for_batch,
             );
             batch_futures.push(future);
         }
@@ -512,6 +556,7 @@ impl Downloader {
         app: Option<AppHandle>,
         mods_to_retry: Option<std::collections::HashSet<String>>,
         tx: Option<mpsc::Sender<Result<DownloadedMod, String>>>,
+        process_pids_tracker: Arc<tokio::sync::Mutex<Vec<u32>>>,
     ) -> Result<(Vec<DownloadedMod>, Vec<String>), String> {
         eprintln!("[Downloader] Instance {}: starting download", batch_idx);
 
@@ -598,6 +643,16 @@ impl Downloader {
             .stderr(std::process::Stdio::piped())
             .spawn()
             .map_err(|e| format!("Failed to spawn SteamCMD: {}", e))?;
+        
+        // Save process ID before we move it
+        let process_id = steamcmd_process.id();
+        
+        // Track this process PID so we can kill it if needed
+        if let Some(pid) = process_id {
+            let mut pids = process_pids_tracker.lock().await;
+            pids.push(pid);
+            eprintln!("[Downloader] Instance {}: Added process PID {} to tracker, total PIDs: {}", batch_idx, pid, pids.len());
+        }
 
         // failed_mods_tracker was already created above, now clone for stdout/stderr tasks
         let failed_mods_stdout = failed_mods_tracker.clone();
@@ -618,12 +673,23 @@ impl Downloader {
         let app_stdout = app.clone();
         let app_stderr = app.clone();
         
-        let _stdout_task = if let Some(stdout) = stdout {
+        // Create cancellation flag for parser tasks
+        let cancellation_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cancellation_flag_stdout = cancellation_flag.clone();
+        let cancellation_flag_stderr = cancellation_flag.clone();
+        
+        let stdout_task_handle = if let Some(stdout) = stdout {
+            let batch_idx_clone = batch_idx;
             tokio::spawn(async move {
                 use tokio::io::{AsyncBufReadExt, BufReader};
                 let reader = BufReader::new(stdout);
                 let mut lines = reader.lines();
                 while let Ok(Some(line)) = lines.next_line().await {
+                    // Stop parsing if cancelled (check both local flag and global flag)
+                    if cancellation_flag_stdout.load(std::sync::atomic::Ordering::Relaxed) || crate::services::is_update_cancelled() {
+                        eprintln!("[Downloader] Instance {}: Stopping stdout parser due to cancellation", batch_idx_clone);
+                        break;
+                    }
                     // Parse SteamCMD output to detect mod states
                     Self::parse_steamcmd_output(&line, &mod_ids_stdout, app_stdout.as_ref(), Some(&failed_mods_stdout), mods_to_retry_stdout.as_ref());
                 }
@@ -632,12 +698,18 @@ impl Downloader {
             tokio::spawn(async {})
         };
 
-        let _stderr_task = if let Some(stderr) = stderr {
+        let stderr_task_handle = if let Some(stderr) = stderr {
+            let batch_idx_clone = batch_idx;
             tokio::spawn(async move {
                 use tokio::io::{AsyncBufReadExt, BufReader};
                 let reader = BufReader::new(stderr);
                 let mut lines = reader.lines();
                 while let Ok(Some(line)) = lines.next_line().await {
+                    // Stop parsing if cancelled (check both local flag and global flag)
+                    if cancellation_flag_stderr.load(std::sync::atomic::Ordering::Relaxed) || crate::services::is_update_cancelled() {
+                        eprintln!("[Downloader] Instance {}: Stopping stderr parser due to cancellation", batch_idx_clone);
+                        break;
+                    }
                     // Parse SteamCMD output to detect mod states
                     Self::parse_steamcmd_output(&line, &mod_ids_stderr, app_stderr.as_ref(), Some(&failed_mods_stderr), mods_to_retry_stderr.as_ref());
                 }
@@ -648,11 +720,139 @@ impl Downloader {
 
         // Wait for SteamCMD to start
         sleep(Duration::from_secs(2)).await;
+        
+        // Check if cancelled before waiting
+        if crate::services::is_update_cancelled() {
+            eprintln!("[Downloader] Instance {}: Update was cancelled before SteamCMD started, killing process aggressively", batch_idx);
+            // Try graceful kill first
+            let _ = steamcmd_process.kill().await;
+            
+            // Then aggressively kill process and its children
+            if let Some(pid) = process_id {
+                #[cfg(unix)]
+                {
+                    use std::process;
+                    // Kill process group to kill all children
+                    let _ = process::Command::new("kill")
+                        .arg("-9")
+                        .arg(format!("-{}", pid))
+                        .output();
+                    let _ = process::Command::new("kill")
+                        .arg("-9")
+                        .arg(pid.to_string())
+                        .output();
+                }
+                #[cfg(windows)]
+                {
+                    use std::process;
+                    let _ = process::Command::new("taskkill")
+                        .args(&["/F", "/T", "/PID", &pid.to_string()])
+                        .output();
+                }
+            }
+            
+            // Stop parsers
+            cancellation_flag.store(true, std::sync::atomic::Ordering::Relaxed);
+            stdout_task_handle.abort();
+            stderr_task_handle.abort();
+            
+            // Remove PID from tracker
+            if let Some(pid) = process_id {
+                let mut pids = process_pids_tracker.lock().await;
+                pids.retain(|&p| p != pid);
+            }
+            
+            let _ = fs::remove_file(&script_path);
+            return Err("Update cancelled by user".to_string());
+        }
 
         // Wait for SteamCMD to exit and check exit status
-        let status = steamcmd_process.wait().await
-            .map_err(|e| format!("Failed to wait for SteamCMD: {}", e))?;
-
+        // Use select to check cancellation while waiting
+        let status = tokio::select! {
+            result = steamcmd_process.wait() => {
+                // Stop parsers when process completes
+                cancellation_flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                stdout_task_handle.abort();
+                stderr_task_handle.abort();
+                
+                // Remove PID from tracker when process completes
+                if let Some(pid) = process_id {
+                    let mut pids = process_pids_tracker.lock().await;
+                    pids.retain(|&p| p != pid);
+                }
+                
+                result.map_err(|e| format!("Failed to wait for SteamCMD: {}", e))?
+            }
+            _ = async {
+                use crate::services::is_update_cancelled;
+                loop {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                    if is_update_cancelled() {
+                        eprintln!("[Downloader] Instance {}: Cancellation detected while waiting for SteamCMD", batch_idx);
+                        break;
+                    }
+                }
+            } => {
+                // Cancellation detected, kill the process aggressively
+                eprintln!("[Downloader] Instance {}: Killing SteamCMD process due to cancellation (aggressive)", batch_idx);
+                
+                // Stop parsers first
+                cancellation_flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                stdout_task_handle.abort();
+                stderr_task_handle.abort();
+                
+                // Try graceful kill first
+                let _ = steamcmd_process.kill().await;
+                
+                // Remove PID from tracker
+                if let Some(pid) = process_id {
+                    let mut pids = process_pids_tracker.lock().await;
+                    pids.retain(|&p| p != pid);
+                }
+                
+                // Then aggressively kill process and its children
+                if let Some(pid) = process_id {
+                    #[cfg(unix)]
+                    {
+                        use std::process;
+                        // Kill process group to kill all children
+                        let _ = process::Command::new("kill")
+                            .arg("-9")
+                            .arg(format!("-{}", pid))
+                            .output();
+                        let _ = process::Command::new("kill")
+                            .arg("-9")
+                            .arg(pid.to_string())
+                            .output();
+                        // Also try pkill to kill all child processes
+                        let _ = process::Command::new("pkill")
+                            .arg("-9")
+                            .arg("-P")
+                            .arg(pid.to_string())
+                            .output();
+                    }
+                    #[cfg(windows)]
+                    {
+                        use std::process;
+                        let _ = process::Command::new("taskkill")
+                            .args(&["/F", "/T", "/PID", &pid.to_string()])
+                            .output();
+                    }
+                }
+                
+                let _ = fs::remove_file(&script_path);
+                return Err("Update cancelled by user".to_string());
+            }
+        };
+        
+        // Check if update was cancelled after process exited
+        if crate::services::is_update_cancelled() {
+            eprintln!("[Downloader] Instance {}: Update was cancelled, cleaning up", batch_idx);
+            // Clean up script file
+            let _ = fs::remove_file(&script_path);
+            return Err("Update cancelled by user".to_string());
+        }
+        
         // Check if SteamCMD exited successfully
         if !status.success() {
             let exit_code = status.code().unwrap_or(-1);

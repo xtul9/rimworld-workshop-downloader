@@ -16,6 +16,7 @@ export default function QueryTab() {
     hasQueried,
     queryMods,
     updateMods,
+    cancelUpdateMods,
   } = useMods();
   const { permissions } = useAccessError();
   const { openModal } = useModal();
@@ -71,14 +72,26 @@ export default function QueryTab() {
 
   return (
     <div className="query-tab">
-          <button
-            onClick={handleQueryMods}
-            disabled={isQuerying || isUpdating || !modsPath}
-            title="Query for outdated mods"
-        className="query-mods-button"
-          >
-            Query Mods
-          </button>
+          {isUpdating ? (
+            <button
+              onClick={cancelUpdateMods}
+              disabled={!isUpdating}
+              title="Cancel ongoing update"
+              className="query-mods-button"
+              style={{ backgroundColor: "#d32f2f" }}
+            >
+              Cancel Update
+            </button>
+          ) : (
+            <button
+              onClick={handleQueryMods}
+              disabled={isQuerying || isUpdating || !modsPath}
+              title="Query for outdated mods"
+              className="query-mods-button"
+            >
+              Query Mods
+            </button>
+          )}
       {!modsPath && (
         <div className="query-path-warning-container">
           <span className="query-path-warning">
