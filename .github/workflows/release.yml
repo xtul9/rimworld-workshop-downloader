@@ -138,27 +138,50 @@ jobs:
           echo "Release files prepared:"
           ls -lh release-files/
 
+      - name: Extract changelog section
+        run: |
+          VERSION="${{ steps.get_version.outputs.version }}"
+          
+          # Create release body with header and changelog section
+          {
+            echo "##v$VERSION"
+            echo ""
+            echo "### Installation"
+            echo "- **Linux**: Install using your package manager (\`sudo dpkg -i *.deb\` or \`sudo rpm -i *.rpm\`)"
+            echo "- **Windows**: Run the \`.msi\` installer"
+            echo "- **macOS**: Mount the \`.dmg\` and drag the app to Applications"
+            echo ""
+            echo "## Changelog"
+            echo ""
+            
+            # Extract changelog section for this version
+            awk -v version="$VERSION" '
+              BEGIN { 
+                in_section = 0
+                target = "## v" version
+              }
+              /^## v/ {
+                if ($0 == target) {
+                  in_section = 1
+                  next
+                } else if (in_section) {
+                  exit
+                }
+              }
+              in_section { print }
+            ' CHANGELOG.md || echo "No changelog available for this version."
+          } > release-body.md
+          
+          echo "Release body prepared:"
+          cat release-body.md
+
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ steps.get_version.outputs.tag }}
           files: release-files/*
-          name: Rimworld Workshop Downloader v${{ steps.get_version.outputs.version }}
-          body: |
-            ## Rimworld Workshop Downloader v${{ steps.get_version.outputs.version }}
-            
-            ### Downloads
-            - **Linux**: `.deb` and `.rpm` packages
-            - **Windows**: `.msi` installer
-            - **macOS**: `.dmg` disk image
-            
-            ### Installation
-            - **Linux**: Install using your package manager (`sudo dpkg -i *.deb` or `sudo rpm -i *.rpm`)
-            - **Windows**: Run the `.msi` installer
-            - **macOS**: Mount the `.dmg` and drag the app to Applications
-            
-            ### Changes
-            See the commit history for detailed changelog.
+          name: Rimworld Workshop Downloader
+          body_path: release-body.md
           draft: false
           prerelease: false
         env:
