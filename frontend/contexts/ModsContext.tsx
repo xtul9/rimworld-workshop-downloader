@@ -61,6 +61,7 @@ export function ModsProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let unlistenState: (() => void) | undefined;
     let unlistenUpdated: (() => void) | undefined;
+    let unlistenCancelled: (() => void) | undefined;
 
     const setupListeners = async () => {
       // Listen for mod-state events - this is the PRIMARY event for all state changes
@@ -100,6 +101,34 @@ export function ModsProvider({ children }: { children: ReactNode }) {
             return newMap;
           });
         }
+      });
+
+      // Listen for update-cancelled events
+      unlistenCancelled = await listen("update-cancelled", () => {
+        console.log("[EVENT] Update cancelled");
+        // Mark all mods with active states as cancelled, then clear them after a short delay
+        setModStates(prev => {
+          const newMap = new Map(prev);
+          for (const [modId, state] of prev.entries()) {
+            if (state !== null && state !== "completed" && state !== "failed") {
+              newMap.set(modId, "cancelled");
+            }
+          }
+          return newMap;
+        });
+        
+        // Clear cancelled states after a short delay to restore normal view
+        setTimeout(() => {
+          setModStates(prev => {
+            const newMap = new Map(prev);
+            for (const [modId, state] of prev.entries()) {
+              if (state === "cancelled") {
+                newMap.delete(modId);
+              }
+            }
+            return newMap;
+          });
+        }, 500);
       });
 
       // Listen for mod-updated events - this marks the end of installation
@@ -170,6 +199,7 @@ export function ModsProvider({ children }: { children: ReactNode }) {
     return () => {
       unlistenState?.();
       unlistenUpdated?.();
+      unlistenCancelled?.();
     };
   }, []);
 
