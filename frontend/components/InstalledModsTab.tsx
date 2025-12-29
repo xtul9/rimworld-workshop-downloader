@@ -71,7 +71,7 @@ export default function InstalledModsTab() {
     }
   }, [hasLoaded, isLoading, modsPath, loadInstalledMods]);
 
-  const handleForceUpdateAll = () => {
+  const handleForceUpdateAll = async () => {
     if (filteredAndSortedMods.length === 0) return;
     
     if (!permissions.canWrite) {
@@ -96,14 +96,23 @@ export default function InstalledModsTab() {
     const totalSize = modsToUpdate.reduce((sum, m) => sum + (m.details?.file_size || 0), 0);
     const sizeText = formatSize(totalSize);
     
-    // Open confirmation modal
-    openModal("force-update-all", {
-      modsCount: modsToUpdate.length,
-      totalSize: sizeText,
-      onConfirm: async () => {
-        await updateMods(modsToUpdate);
-      }
-    });
+    // 100MB in bytes
+    const SIZE_THRESHOLD = 100 * 1024 * 1024; // 104857600 bytes
+    
+    // Only show modal if total size exceeds 100MB
+    if (totalSize > SIZE_THRESHOLD) {
+      // Open confirmation modal
+      openModal("force-update-all", {
+        modsCount: modsToUpdate.length,
+        totalSize: sizeText,
+        onConfirm: async () => {
+          await updateMods(modsToUpdate);
+        }
+      });
+    } else {
+      // Size is below threshold, update directly without modal
+      await updateMods(modsToUpdate);
+    }
   };
 
   const handleUpdateSelected = async (selectedMods: typeof mods) => {
