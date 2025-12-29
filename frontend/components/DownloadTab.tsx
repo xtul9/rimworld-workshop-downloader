@@ -572,6 +572,9 @@ export default function DownloadTab() {
                   console.error("Failed to continue download:", err);
                   reject(err);
                 }
+              },
+              onReject: () => {
+                reject(new Error("Download cancelled by user"));
               }
             });
           });

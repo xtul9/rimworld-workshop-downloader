@@ -155,6 +155,7 @@ function AppContent() {
           modId={modalData.modId}
           modTitle={modalData.modTitle}
           onResolve={modalData.onResolve}
+          onReject={modalData.onReject}
         />
       )}
 

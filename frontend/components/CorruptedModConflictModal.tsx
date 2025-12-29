@@ -8,13 +8,15 @@ interface CorruptedModConflictModalProps {
   modId: string;
   modTitle: string;
   onResolve: (overwrite: boolean) => Promise<void>;
+  onReject?: () => void;
 }
 
 export default function CorruptedModConflictModal({ 
   folderName, 
   modId, 
   modTitle,
-  onResolve 
+  onResolve,
+  onReject
 }: CorruptedModConflictModalProps) {
   const { closeModal, modalData } = useModal();
   const { permissions } = useAccessError();
@@ -65,12 +67,17 @@ export default function CorruptedModConflictModal({
     }
   }, [onResolve, closeModal, permissions.canWrite]);
 
-  return (
-    <div className="restore-modal-overlay" onClick={() => {
-      if (!isProcessing) {
-        closeModal();
+  const handleCancel = useCallback(() => {
+    if (!isProcessing) {
+      if (onReject) {
+        onReject();
       }
-    }}>
+      closeModal();
+    }
+  }, [onReject, closeModal, isProcessing]);
+
+  return (
+    <div className="restore-modal-overlay" onClick={handleCancel}>
       <div className="restore-modal" onClick={(e) => e.stopPropagation()}>
         <div className="restore-modal-header">
           <h3>
@@ -84,7 +91,7 @@ export default function CorruptedModConflictModal({
           {!isProcessing && (
             <button 
               className="close-modal-button"
-              onClick={closeModal}
+              onClick={handleCancel}
             >
               ×
             </button>
@@ -120,7 +127,7 @@ export default function CorruptedModConflictModal({
         <div className="restore-modal-actions">
           {error ? (
             <button
-              onClick={closeModal}
+              onClick={handleCancel}
               className="restore-button"
             >
               Close
@@ -128,7 +135,7 @@ export default function CorruptedModConflictModal({
           ) : (
             <>
               <button
-                onClick={closeModal}
+                onClick={handleCancel}
                 className="cancel-button"
                 disabled={isProcessing}
               >
