@@ -204,7 +204,7 @@ impl ModUpdater {
         // Ignore this path in mod watcher during update operation
         use crate::services::{ignore_path_in_watcher, WatcherIgnoreGuard};
         ignore_path_in_watcher(mod_destination_path.clone()).await;
-        let _guard = WatcherIgnoreGuard::new(mod_destination_path.clone());
+        let _guard = WatcherIgnoreGuard::new(mod_destination_path.clone()).await;
 
         // Remove existing mod folder if it exists (async)
         if mod_destination_path.exists() {

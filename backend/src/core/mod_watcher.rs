@@ -2,7 +2,7 @@
 // Observes the mods folder and emits events when mods are added or removed
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::collections::{HashSet, HashMap};
 use tokio::sync::Mutex;
 use notify::{Watcher, RecommendedWatcher, RecursiveMode, Event, EventKind};
@@ -16,7 +16,7 @@ pub struct ModWatcher {
     app_handle: Option<AppHandle>,
     known_mods: Arc<Mutex<HashMap<PathBuf, String>>>, // Track folder path -> mod_id mapping to detect additions/removals
     pending_folders: Arc<Mutex<HashSet<PathBuf>>>, // Track folders that might become mods (don't have About/ yet)
-    ignored_paths: Arc<Mutex<HashSet<PathBuf>>>, // Track paths to ignore during app operations (updates, restores, etc.)
+    ignored_paths: Arc<RwLock<HashSet<PathBuf>>>, // Track paths to ignore during app operations (updates, restores, etc.)
     periodic_check_handle: Option<tokio::task::JoinHandle<()>>, // Handle for periodic check task to allow cancellation
 }
 
@@ -28,25 +28,30 @@ impl ModWatcher {
             app_handle: None,
             known_mods: Arc::new(Mutex::new(HashMap::new())),
             pending_folders: Arc::new(Mutex::new(HashSet::new())),
-            ignored_paths: Arc::new(Mutex::new(HashSet::new())),
+            ignored_paths: Arc::new(RwLock::new(HashSet::new())),
             periodic_check_handle: None,
         }
     }
 
     /// Ignore events for a specific path (used during app operations like updates/restores)
-    pub async fn ignore_path(&self, path: PathBuf) {
-        let mut ignored = self.ignored_paths.lock().await;
+    pub fn ignore_path(&self, path: PathBuf) {
+        let mut ignored = self.ignored_paths.write().unwrap();
         use crate::services::canonicalize_path_or_fallback;
         let canonical_path = canonicalize_path_or_fallback(&path);
         ignored.insert(canonical_path);
     }
 
     /// Stop ignoring events for a specific path
-    pub async fn unignore_path(&self, path: PathBuf) {
-        let mut ignored = self.ignored_paths.lock().await;
+    pub fn unignore_path(&self, path: PathBuf) {
+        let mut ignored = self.ignored_paths.write().unwrap();
         use crate::services::canonicalize_path_or_fallback;
         let canonical_path = canonicalize_path_or_fallback(&path);
         ignored.remove(&canonical_path);
+    }
+
+    /// Get a reference to the ignored_paths for direct access (used by WatcherIgnoreGuard)
+    pub fn ignored_paths(&self) -> Arc<RwLock<HashSet<PathBuf>>> {
+        self.ignored_paths.clone()
     }
 
     /// Start watching the mods folder for changes
@@ -161,7 +166,7 @@ impl ModWatcher {
             pending.clear();
         }
         {
-            let mut ignored = self.ignored_paths.lock().await;
+            let mut ignored = self.ignored_paths.write().unwrap();
             ignored.clear();
         }
     }
@@ -173,7 +178,7 @@ impl ModWatcher {
         mods_path: &Path,
         known_mods: &Arc<Mutex<HashMap<PathBuf, String>>>,
         pending_folders: &Arc<Mutex<HashSet<PathBuf>>>,
-        ignored_paths: &Arc<Mutex<HashSet<PathBuf>>>,
+        ignored_paths: &Arc<RwLock<HashSet<PathBuf>>>,
     ) {
         // Filter out events for temporary access test files
         let is_access_test_file = event.paths.iter().any(|p| {
@@ -190,10 +195,14 @@ impl ModWatcher {
         
         // First, check if any path is inside an ignored folder (before processing)
         // This prevents logging events for files inside mods being updated
-        let ignored = ignored_paths.lock().await;
+        // Copy the ignored paths to avoid holding the lock across async boundaries
+        let ignored_paths_copy: HashSet<PathBuf> = {
+            let ignored = ignored_paths.read().unwrap();
+            ignored.iter().cloned().collect()
+        };
         let is_inside_ignored = event.paths.iter().any(|p| {
             // For each ignored path, check if event path starts with it
-            for ignored_path in ignored.iter() {
+            for ignored_path in ignored_paths_copy.iter() {
                 // Try to canonicalize event path first (most reliable)
                 if let Ok(canon_p) = p.canonicalize() {
                     if canon_p.starts_with(ignored_path) {
@@ -210,7 +219,6 @@ impl ModWatcher {
             }
             false
         });
-        drop(ignored);
         
         if is_inside_ignored {
             // Silently ignore events inside ignored folders (app operations in progress)
@@ -283,13 +291,17 @@ impl ModWatcher {
 
         // Check if any of the paths are being ignored (app operations in progress)
         // This is a second check after filtering to direct children
-        let ignored = ignored_paths.lock().await;
+        // Copy the ignored paths to avoid holding the lock across async boundaries
+        let ignored_paths_copy: HashSet<PathBuf> = {
+            let ignored = ignored_paths.read().unwrap();
+            ignored.iter().cloned().collect()
+        };
         let filtered_paths: Vec<PathBuf> = paths.into_iter()
             .filter(|p| {
                 // Check if path or any parent is ignored
                 let mut current = p.clone();
                 loop {
-                    if ignored.contains(&current) {
+                    if ignored_paths_copy.contains(&current) {
                         return false;
                     }
                     if let Some(parent) = current.parent() {
@@ -304,7 +316,6 @@ impl ModWatcher {
                 true
             })
             .collect();
-        drop(ignored);
 
         if filtered_paths.is_empty() {
             eprintln!("[ModWatcher] All paths ignored (app operations in progress)");
@@ -641,7 +652,7 @@ impl ModWatcher {
         mods_path: &Path,
         known_mods: &Arc<Mutex<HashMap<PathBuf, String>>>,
         pending_folders: &Arc<Mutex<HashSet<PathBuf>>>,
-        ignored_paths: &Arc<Mutex<HashSet<PathBuf>>>,
+        ignored_paths: &Arc<RwLock<HashSet<PathBuf>>>,
     ) {
         // Check pending folders
         let folders_to_check: Vec<PathBuf> = {
@@ -658,12 +669,14 @@ impl ModWatcher {
             }
             
             // Check if path is ignored (app operation in progress)
-            let ignored_guard: tokio::sync::MutexGuard<'_, HashSet<PathBuf>> = ignored_paths.lock().await;
-            if ignored_guard.contains(&folder_path) {
-                drop(ignored_guard);
+            // Copy check to avoid holding lock across async boundaries
+            let is_ignored = {
+                let ignored_guard = ignored_paths.read().unwrap();
+                ignored_guard.contains(&folder_path)
+            };
+            if is_ignored {
                 continue; // Skip if being ignored
             }
-            drop(ignored_guard);
             
             Self::check_single_folder(&folder_path, app, mods_path, known_mods, pending_folders, false).await;
         }
@@ -724,10 +737,9 @@ impl Drop for ModWatcher {
                 let mut pending = pending_folders.lock().await;
                 pending.clear();
             });
-            handle.spawn(async move {
-                let mut ignored = ignored_paths.lock().await;
-                ignored.clear();
-            });
+            // ignored_paths is now synchronous, so we can clear it directly
+            let mut ignored = ignored_paths.write().unwrap();
+            ignored.clear();
         }
         // If we're not in an async context, the structures will be cleaned up
         // when the Arc is dropped, which is acceptable

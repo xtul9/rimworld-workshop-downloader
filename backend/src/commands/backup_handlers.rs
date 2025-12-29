@@ -193,7 +193,7 @@ pub async fn restore_backup(
     // Ignore this path in mod watcher during restore operation
     use crate::services::{ignore_path_in_watcher, WatcherIgnoreGuard};
     ignore_path_in_watcher(normalized_mod_path.clone()).await;
-    let _guard = WatcherIgnoreGuard::new(normalized_mod_path.clone());
+    let _guard = WatcherIgnoreGuard::new(normalized_mod_path.clone()).await;
     
     // Remove current mod folder (async)
     let mod_path_clone = normalized_mod_path.clone();

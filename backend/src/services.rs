@@ -77,26 +77,37 @@ pub fn path_to_string(path: &Path) -> String {
 pub async fn ignore_path_in_watcher(path: PathBuf) {
     let watcher = get_mod_watcher();
     let guard = watcher.lock().await;
-    guard.ignore_path(path).await;
+    guard.ignore_path(path);
 }
 
 /// Stop ignoring a path in mod watcher (helper function to reduce duplication)
 pub async fn unignore_path_in_watcher(path: PathBuf) {
     let watcher = get_mod_watcher();
     let guard = watcher.lock().await;
-    guard.unignore_path(path).await;
+    guard.unignore_path(path);
 }
 
 /// RAII guard that automatically unignores a path when dropped
 /// This ensures that paths are always unignored even if an error occurs
 pub struct WatcherIgnoreGuard {
+    ignored_paths: Option<Arc<std::sync::RwLock<std::collections::HashSet<PathBuf>>>>,
     path: Option<PathBuf>,
 }
 
 impl WatcherIgnoreGuard {
     /// Create a new guard that will unignore the path when dropped
-    pub fn new(path: PathBuf) -> Self {
-        Self { path: Some(path) }
+    /// This is async because it needs to access the watcher which is behind an async Mutex
+    pub async fn new(path: PathBuf) -> Self {
+        // Get direct access to ignored_paths for synchronous Drop
+        let watcher = get_mod_watcher();
+        let guard = watcher.lock().await;
+        let ignored_paths = guard.ignored_paths();
+        drop(guard);
+        
+        Self {
+            ignored_paths: Some(ignored_paths),
+            path: Some(path),
+        }
     }
 
     /// Manually unignore the path and consume the guard
@@ -104,30 +115,20 @@ impl WatcherIgnoreGuard {
     pub async fn unignore(mut self) {
         if let Some(path) = self.path.take() {
             unignore_path_in_watcher(path).await;
+            // Clear ignored_paths to prevent Drop from running
+            self.ignored_paths = None;
         }
     }
 }
 
 impl Drop for WatcherIgnoreGuard {
     fn drop(&mut self) {
-        // In Drop, we can't await, so we spawn a task
-        // This ensures cleanup happens even if the async function returns early with an error
-        if let Some(path) = self.path.take() {
-            let watcher = get_mod_watcher();
-            // Try to get the current runtime handle, fall back to spawn if available
-            if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                handle.spawn(async move {
-                    let guard = watcher.lock().await;
-                    guard.unignore_path(path).await;
-                });
-            } else {
-                // If no runtime handle is available, try to spawn anyway
-                // This should work in most cases since we're in a tokio context
-                tokio::spawn(async move {
-                    let guard = watcher.lock().await;
-                    guard.unignore_path(path).await;
-                });
-            }
+        // Drop is now fully synchronous - ignored_paths uses RwLock which is synchronous
+        if let (Some(ignored_paths), Some(path)) = (self.ignored_paths.take(), self.path.take()) {
+            let mut ignored = ignored_paths.write().unwrap();
+            use crate::services::canonicalize_path_or_fallback;
+            let canonical_path = canonicalize_path_or_fallback(&path);
+            ignored.remove(&canonical_path);
         }
     }
 }
