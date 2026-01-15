@@ -46,4 +46,8 @@ echo "  - .rpm: backend/target/release/bundle/rpm/"
 echo ""
 echo "Note: AppImage build was skipped due to linuxdeploy issues."
 echo "You can install the .deb or .rpm package instead."
+echo ""
+echo "For Arch Linux and derivatives:"
+echo "  - Use the PKGBUILD file in the repository root to build with makepkg"
+echo "  - Or install from AUR if available"
 

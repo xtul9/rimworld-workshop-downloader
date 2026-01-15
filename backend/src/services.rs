@@ -2,13 +2,14 @@
 
 use std::path::{Path, PathBuf};
 use crate::core::{SteamApi, Downloader, mod_watcher::ModWatcher};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, atomic::{AtomicBool, Ordering}};
 use tokio::sync::Mutex;
 
 // Shared instances for stateful services
 static STEAM_API: OnceLock<Arc<Mutex<SteamApi>>> = OnceLock::new();
 static DOWNLOADER: OnceLock<Arc<Mutex<Downloader>>> = OnceLock::new();
 static MOD_WATCHER: OnceLock<Arc<Mutex<ModWatcher>>> = OnceLock::new();
+static UPDATE_CANCEL_FLAG: OnceLock<Arc<AtomicBool>> = OnceLock::new();
 
 /// Get or initialize the shared SteamApi instance
 pub fn get_steam_api() -> Arc<Mutex<SteamApi>> {
@@ -29,6 +30,28 @@ pub fn get_mod_watcher() -> Arc<Mutex<ModWatcher>> {
     MOD_WATCHER.get_or_init(|| {
         Arc::new(Mutex::new(ModWatcher::new()))
     }).clone()
+}
+
+/// Get or initialize the shared update cancellation flag
+pub fn get_update_cancel_flag() -> Arc<AtomicBool> {
+    UPDATE_CANCEL_FLAG.get_or_init(|| {
+        Arc::new(AtomicBool::new(false))
+    }).clone()
+}
+
+/// Check if update should be cancelled
+pub fn is_update_cancelled() -> bool {
+    get_update_cancel_flag().load(Ordering::Relaxed)
+}
+
+/// Set the cancellation flag
+pub fn cancel_update() {
+    get_update_cancel_flag().store(true, Ordering::Relaxed);
+}
+
+/// Reset the cancellation flag
+pub fn reset_update_cancel_flag() {
+    get_update_cancel_flag().store(false, Ordering::Relaxed);
 }
 
 /// Validate that a path exists and is a directory

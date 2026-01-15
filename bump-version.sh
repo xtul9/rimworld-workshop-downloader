@@ -58,6 +58,7 @@ FILES=(
     "package.json"
     "flake.nix"
     "backend/Cargo.lock"
+    "PKGBUILD"
 )
 
 # Function to update version in JSON file
@@ -108,12 +109,12 @@ update_cargo_version() {
 update_flake_version() {
     local file="$1"
     local version="$2"
-    
+
     if [ ! -f "$file" ]; then
         print_error "File not found: $file"
         return 1
     fi
-    
+
     # Use sed to replace version = "x.y.z"; (in flake.nix format)
     # Pattern matches: version = "0.4.0"; (with optional spaces)
     if [[ "$OSTYPE" == "darwin"* ]]; then
@@ -123,7 +124,31 @@ update_flake_version() {
         # Linux uses GNU sed
         sed -i "s/version[[:space:]]*=[[:space:]]*\"[^\"]*\"/version = \"$version\"/g" "$file"
     fi
-    
+
+    print_info "Updated: $file"
+}
+
+# Function to update version in PKGBUILD
+update_pkgbuild_version() {
+    local file="$1"
+    local version="$2"
+
+    if [ ! -f "$file" ]; then
+        print_error "File not found: $file"
+        return 1
+    fi
+
+    # Use sed to replace pkgver=x.y.z and reset pkgrel to 1
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        # macOS uses BSD sed
+        sed -i '' "s/^pkgver[[:space:]]*=[[:space:]]*[^\$]*/pkgver=$version/g" "$file"
+        sed -i '' "s/^pkgrel[[:space:]]*=[[:space:]]*[0-9]*/pkgrel=1/g" "$file"
+    else
+        # Linux uses GNU sed
+        sed -i "s/^pkgver[[:space:]]*=[[:space:]]*[^\$]*/pkgver=$version/g" "$file"
+        sed -i "s/^pkgrel[[:space:]]*=[[:space:]]*[0-9]*/pkgrel=1/g" "$file"
+    fi
+
     print_info "Updated: $file"
 }
 
@@ -187,6 +212,8 @@ for file in "${FILES[@]}"; do
         update_flake_version "$file" "$NEW_VERSION"
     elif [[ "$file" == "backend/Cargo.lock" ]]; then
         update_cargo_lock_version "$file" "$NEW_VERSION"
+    elif [[ "$file" == "PKGBUILD" ]]; then
+        update_pkgbuild_version "$file" "$NEW_VERSION"
     elif [[ "$file" == *.toml ]]; then
         update_cargo_version "$file" "$NEW_VERSION"
     else

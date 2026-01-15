@@ -25,6 +25,9 @@ pub fn run() {
             commands::list_installed_mods,
             commands::update_mod_details,
             commands::update_mods,
+            commands::cancel_update_mods,
+            commands::check_update_cancelled,
+            commands::reset_update_cancel_flag_command,
             commands::check_backup,
             commands::check_backups,
             commands::restore_backup,
@@ -39,6 +42,7 @@ pub fn run() {
             commands::get_collection_details,
             commands::get_collection_details_batch,
             commands::download_mod,
+            commands::continue_download_with_decision,
             commands::start_mod_watcher,
             commands::stop_mod_watcher,
         ])

@@ -33,8 +33,8 @@ export default function ForceUpdateAllModal({ modsCount, totalSize, onConfirm }:
             You are about to force update <strong>{modsCount} mod(s)</strong>.
           </p>
           <p>
-            The total download size will be approximately <strong>{totalSize}</strong>, 
-            with no capability to download in parallel.
+            The total download size will be approximately <strong>{totalSize}</strong>. 
+            Depending on your internet connection and set up SteamCMD instances, this may take a while.
           </p>
           <p className="restore-warning">
             <strong>Warning:</strong> This is a potentially long-running operation, 

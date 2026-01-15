@@ -6,7 +6,31 @@ use tauri::{AppHandle, Emitter};
 use crate::core::mod_scanner::BaseMod;
 use crate::core::mod_manager::ModUpdater;
 use crate::core::access_check::ensure_directory_access;
-use crate::services::{get_downloader, get_mods_path_from_mod_path, find_all_mod_folders_with_id, write_last_updated_file};
+use crate::services::{get_downloader, get_mods_path_from_mod_path, find_all_mod_folders_with_id, write_last_updated_file, reset_update_cancel_flag, is_update_cancelled, cancel_update};
+
+/// Cancel ongoing mod updates
+#[tauri::command]
+pub async fn cancel_update_mods(app: AppHandle) -> Result<(), String> {
+    cancel_update();
+    
+    // Emit cancellation event for all active mods
+    let _ = app.emit("update-cancelled", serde_json::json!({}));
+    
+    Ok(())
+}
+
+/// Check if update is cancelled
+#[tauri::command]
+pub async fn check_update_cancelled() -> Result<bool, String> {
+    Ok(is_update_cancelled())
+}
+
+/// Reset the cancellation flag
+#[tauri::command]
+pub async fn reset_update_cancel_flag_command() -> Result<(), String> {
+    reset_update_cancel_flag();
+    Ok(())
+}
 
 /// Update mods
 #[tauri::command]
@@ -20,6 +44,9 @@ pub async fn update_mods(
     if mods.is_empty() {
         return Err("mods array is required".to_string());
     }
+    
+    // Reset cancellation flag at the start of update
+    reset_update_cancel_flag();
     
     // Filter out non-Steam mods - they can't be updated from Workshop
     let steam_mods: Vec<BaseMod> = mods.into_iter()
@@ -86,8 +113,90 @@ pub async fn update_mods(
     // This allows installation to start immediately after each mod is downloaded,
     // without waiting for all downloads to complete
     while let Some(result) = mod_receiver.recv().await {
+        // Check if update was cancelled
+        if is_update_cancelled() {
+            eprintln!("[UPDATE_MODS] Update cancelled by user");
+            
+            // Kill only our tracked SteamCMD processes
+            {
+                let downloader = get_downloader();
+                let mut dl = downloader.lock().await;
+                dl.kill_our_processes().await;
+            }
+            
+            // Wait for all already-spawned installation tasks to complete
+            // This prevents race conditions where mods are installed after cancellation
+            let results: Vec<(String, Result<PathBuf, String>)> = futures::future::join_all(update_handles).await
+                .into_iter()
+                .map(|result: Result<(String, Result<PathBuf, String>), tokio::task::JoinError>| {
+                    result.unwrap_or_else(|e| {
+                        eprintln!("[UPDATE_MODS] Task panicked: {:?}", e);
+                        ("".to_string(), Err(format!("Task panicked: {:?}", e)))
+                    })
+                })
+                .collect();
+            
+            // Emit cancellation event for remaining mods
+            for mod_id in &mod_ids {
+                if !seen_mod_ids.contains(mod_id) {
+                    let _ = app.emit("mod-state", serde_json::json!({
+                        "modId": mod_id,
+                        "state": "cancelled"
+                    }));
+                }
+            }
+            
+            // Mark all mods as cancelled, but preserve any that completed before cancellation
+            let mut cancelled_mods = Vec::new();
+            for (mod_id, result) in results {
+                // Skip entries with empty mod_id (indicates task panic where we lost mod_id)
+                if mod_id.is_empty() {
+                    eprintln!("[UPDATE_MODS] Skipping panicked task result - mod_id unknown");
+                    continue;
+                }
+
+                match result {
+                    Ok(_path) => {
+                        // Mod was successfully updated before cancellation
+                        if let Some(original_mod) = mods_map.get(&mod_id) {
+                            let mut updated_mod = original_mod.clone();
+                            updated_mod.updated = Some(true);
+                            cancelled_mods.push(updated_mod);
+                        }
+                    }
+                    Err(_) => {
+                        // Mark as cancelled
+                        if let Some(original_mod) = mods_map.get(&mod_id) {
+                            let mut cancelled_mod = (*original_mod).clone();
+                            cancelled_mod.updated = Some(false);
+                            cancelled_mods.push(cancelled_mod);
+                        }
+                    }
+                }
+            }
+            
+            // Add mods that were queued but not started
+            for mod_id in &mod_ids {
+                if !seen_mod_ids.contains(mod_id) {
+                    if let Some(original_mod) = mods_map.get(mod_id) {
+                        let mut cancelled_mod = (*original_mod).clone();
+                        cancelled_mod.updated = Some(false);
+                        cancelled_mods.push(cancelled_mod);
+                    }
+                }
+            }
+            
+            return Ok(cancelled_mods);
+        }
+        
         match result {
             Ok(downloaded_mod) => {
+                // Check if update was cancelled before processing
+                if is_update_cancelled() {
+                    eprintln!("[UPDATE_MODS] Update cancelled, ignoring downloaded mod");
+                    continue;
+                }
+                
                 // Mark this mod as seen
                 seen_mod_ids.insert(downloaded_mod.mod_id.clone());
                 
@@ -121,6 +230,16 @@ pub async fn update_mods(
                 // Spawn independent task for each mod installation
                 // This ensures events are emitted immediately when each mod completes
                 let handle = tokio::spawn(async move {
+                    // Check if cancelled before processing
+                    if is_update_cancelled() {
+                        eprintln!("[UPDATE_MODS] Update cancelled, skipping mod {}", mod_id);
+                        let _ = app_clone.emit("mod-state", serde_json::json!({
+                            "modId": mod_id,
+                            "state": "cancelled"
+                        }));
+                        return (mod_id, Err("Update cancelled".to_string()));
+                    }
+                    
                     eprintln!("[UPDATE_MODS] Processing downloaded mod: {} at {:?}", mod_id, mod_path);
                                 
                     let updater = ModUpdater;
@@ -133,6 +252,7 @@ pub async fn update_mods(
                         backup_mods,
                         backup_dir_clone.as_deref(),
                         mod_title.as_deref(),
+                        None, // force_overwrite_corrupted - None means ask user if corrupted mod found
                     ).await;
             
             match mod_path_result {
@@ -186,6 +306,13 @@ pub async fn update_mods(
         update_handles.push(handle);
             }
             Err(error_msg) => {
+                // Check if error is due to cancellation
+                if error_msg.contains("cancelled") || error_msg.contains("Update cancelled by user") {
+                    eprintln!("[UPDATE_MODS] Download cancelled (not a failure): {}", error_msg);
+                    // Don't treat cancellation as failure - it will be handled by cancellation check above
+                    continue;
+                }
+                
                 // Handle download failure - extract mod ID from error message if possible
                 eprintln!("[UPDATE_MODS] Download channel reported error: {}", error_msg);
                 // Don't emit mod-updated here - let the retry system handle state transitions
@@ -202,16 +329,83 @@ pub async fn update_mods(
         .cloned()
         .collect();
     
-    // Handle mods that failed to download
-    for failed_mod_id in &failed_download_mod_ids {
-        eprintln!("[UPDATE_MODS] Mod {} failed to download", failed_mod_id);
+    // Handle mods that failed to download (but not if cancelled)
+    if !is_update_cancelled() {
+        for failed_mod_id in &failed_download_mod_ids {
+            eprintln!("[UPDATE_MODS] Mod {} failed to download", failed_mod_id);
+            
+            // Emit mod-updated event with failure
+            let _ = app.emit("mod-updated", serde_json::json!({
+                "modId": failed_mod_id,
+                "success": false,
+                "error": "Download failed - SteamCMD reported failure"
+            }));
+        }
+    } else {
+        // If cancelled, mark remaining mods as cancelled, not failed
+        for failed_mod_id in &failed_download_mod_ids {
+            eprintln!("[UPDATE_MODS] Mod {} download cancelled (not failed)", failed_mod_id);
+            let _ = app.emit("mod-state", serde_json::json!({
+                "modId": failed_mod_id,
+                "state": "cancelled"
+            }));
+        }
+    }
+    
+    // Check if cancelled before waiting for results
+    if is_update_cancelled() {
+        eprintln!("[UPDATE_MODS] Update cancelled, stopping wait for results");
+        // Still wait for tasks to complete, but mark remaining as cancelled
+        let results: Vec<_> = futures::future::join_all(update_handles).await
+            .into_iter()
+            .map(|result| {
+                result.unwrap_or_else(|e| {
+                    eprintln!("[UPDATE_MODS] Task panicked: {:?}", e);
+                    ("".to_string(), Err(format!("Task panicked: {:?}", e)))
+                })
+            })
+            .collect();
         
-        // Emit mod-updated event with failure
-        let _ = app.emit("mod-updated", serde_json::json!({
-            "modId": failed_mod_id,
-            "success": false,
-            "error": "Download failed - SteamCMD reported failure"
-        }));
+        let mut cancelled_mods = Vec::new();
+        for (mod_id, result) in results {
+            // Skip entries with empty mod_id (indicates task panic where we lost mod_id)
+            if mod_id.is_empty() {
+                eprintln!("[UPDATE_MODS] Skipping panicked task result - mod_id unknown");
+                continue;
+            }
+
+            match result {
+                Ok(_path) => {
+                    // Mod was successfully updated before cancellation
+                    if let Some(original_mod) = mods_map.get(&mod_id) {
+                        let mut updated_mod = original_mod.clone();
+                        updated_mod.updated = Some(true);
+                        cancelled_mods.push(updated_mod);
+                    }
+                }
+                Err(_) => {
+                    // Mark as cancelled
+                    if let Some(original_mod) = mods_map.get(&mod_id) {
+                        let mut cancelled_mod = (*original_mod).clone();
+                        cancelled_mod.updated = Some(false);
+                        cancelled_mods.push(cancelled_mod);
+                    }
+                }
+            }
+        }
+        
+        // Add mods that were queued but not started
+        for mod_id in &mod_ids {
+            if !seen_mod_ids.contains(mod_id) {
+                if let Some(original_mod) = mods_map.get(mod_id) {
+                    let mut cancelled_mod = (*original_mod).clone();
+                    cancelled_mod.updated = Some(false);
+                    cancelled_mods.push(cancelled_mod);
+                }
+            }
+        }
+        
+        return Ok(cancelled_mods);
     }
     
     // Wait for all updates to complete
@@ -229,6 +423,12 @@ pub async fn update_mods(
     let mut updated_mods = Vec::new();
     
     for (mod_id, result) in results {
+        // Skip entries with empty mod_id (indicates task panic where we lost mod_id)
+        if mod_id.is_empty() {
+            eprintln!("[UPDATE_MODS] Skipping panicked task result - mod_id unknown");
+            continue;
+        }
+
         match result {
             Ok(_path) => {
                 // Find the original mod to return

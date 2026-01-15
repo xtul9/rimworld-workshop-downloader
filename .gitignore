@@ -22,6 +22,9 @@ frontend/dist-ssr/
 *.rpm
 *.msi
 *.exe
+*.pkg.tar.zst
+*.tar.gz
+debian-binary
 
 # IDE
 .idea/
@@ -46,3 +49,5 @@ logs/
 steamcmd/
 scripts/target/
 .cargo/
+pkg/
+src/usr/
