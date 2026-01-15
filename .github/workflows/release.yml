@@ -88,12 +88,27 @@ jobs:
           projectPath: backend
           args: --bundles ${{ matrix.bundle-targets }}
 
+      - name: Build Arch Linux package
+        if: matrix.platform == 'linux'
+        run: |
+          # Build Arch package using Docker
+          docker run --rm -v $(pwd):/workspace -w /workspace \
+            archlinux:latest \
+            bash -c "
+              pacman -Syu --noconfirm pacman-contrib git
+              cd /workspace
+              makepkg --printsrcinfo > .SRCINFO
+              makepkg -f --noconfirm
+              ls -la *.pkg.tar.zst
+            "
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.platform }}-artifacts
           path: |
             backend/target/release/bundle/**
+            *.pkg.tar.zst
           retention-days: 7
           if-no-files-found: error
 
@@ -128,13 +143,14 @@ jobs:
       - name: Prepare release files
         run: |
           mkdir -p release-files
-          
+
           # Copy only the final package files
           find artifacts/linux-artifacts -name "*.deb" -exec cp {} release-files/ \;
           find artifacts/linux-artifacts -name "*.rpm" -exec cp {} release-files/ \;
+          find artifacts/linux-artifacts -name "*.pkg.tar.zst" -exec cp {} release-files/ \;
           find artifacts/windows-artifacts -name "*.msi" -exec cp {} release-files/ \;
           find artifacts/macos-artifacts -name "*.dmg" -exec cp {} release-files/ \;
-          
+
           echo "Release files prepared:"
           ls -lh release-files/
 
@@ -147,7 +163,10 @@ jobs:
             echo "##v$VERSION"
             echo ""
             echo "### Installation"
-            echo "- **Linux**: Install using your package manager (\`sudo dpkg -i *.deb\` or \`sudo rpm -i *.rpm\`)"
+            echo "- **Arch Linux**: Install the \`.pkg.tar.zst\` package with \`sudo pacman -U *.pkg.tar.zst\`"
+            echo "- **Debian/Ubuntu**: Install the \`.deb\` package with \`sudo dpkg -i *.deb\`"
+            echo "- **Fedora/RHEL**: Install the \`.rpm\` package with \`sudo rpm -i *.rpm\`"
+            echo "- **Other Linux**: Use the \`.deb\` or \`.rpm\` package with your package manager"
             echo "- **Windows**: Run the \`.msi\` installer"
             echo "- **macOS**: Mount the \`.dmg\` and drag the app to Applications"
             echo ""

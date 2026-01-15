@@ -22,4 +22,28 @@ Desktop application for managing Rimworld mods from Steam Workshop. Built with T
 - **Virtualized Mod List**: Efficient rendering of large mod lists
 - **Smart Selection**: Shift-click range selection and improved single-click behavior
 
+## Installation
+
+Download the latest release from [GitHub Releases](https://github.com/xtul9/rimworld-workshop-downloader/releases).
+
+### Linux
+- **Arch Linux & derivatives** (Manjaro, CachyOS, etc.): Install the `.pkg.tar.zst` package
+  ```bash
+  sudo pacman -U rimworld-workshop-downloader-*.pkg.tar.zst
+  ```
+- **Debian/Ubuntu**: Install the `.deb` package
+  ```bash
+  sudo dpkg -i rimworld-workshop-downloader_*.deb
+  ```
+- **Fedora/RHEL**: Install the `.rpm` package
+  ```bash
+  sudo rpm -i rimworld-workshop-downloader-*.rpm
+  ```
+
+### Windows
+Run the `.msi` installer.
+
+### macOS
+Mount the `.dmg` file and drag the application to your Applications folder.
+
 See the [Wiki](https://github.com/xtul9/rimworld-workshop-downloader/wiki) for more info.

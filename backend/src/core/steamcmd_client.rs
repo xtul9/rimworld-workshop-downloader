@@ -89,24 +89,13 @@ impl Downloader {
     
     /// Static version of find_steamcmd_executable for use in spawned tasks
     async fn find_steamcmd_executable_static(steamcmd_path: &PathBuf) -> Result<PathBuf, String> {
-        // Try to find in application resources first
-        if let Some(resource_path) = Self::find_steamcmd_from_resources_static(steamcmd_path).await? {
-            return Ok(resource_path);
-        }
-
-        // Try local path
         let steamcmd_exe = if cfg!(target_os = "windows") {
             "steamcmd.exe"
         } else {
             "steamcmd"
         };
-        
-        let local_path = steamcmd_path.join(steamcmd_exe);
-        if local_path.exists() {
-            return Ok(local_path);
-        }
 
-        // Try PATH
+        // Priority 1: Try system-wide installation (PATH) first
         let which_cmd = if cfg!(target_os = "windows") { "where" } else { "which" };
         if let Ok(output) = Command::new(which_cmd)
             .arg(steamcmd_exe)
@@ -116,13 +105,45 @@ impl Downloader {
             if output.status.success() {
                 let path_str = String::from_utf8_lossy(&output.stdout);
                 let path = PathBuf::from(path_str.trim().lines().next().unwrap_or(""));
-                if path.exists() {
+                if path.exists() && path.is_file() {
+                    eprintln!("[Downloader] Using SteamCMD executable from PATH: {:?}", path);
                     return Ok(path);
                 }
             }
         }
 
-        Err(format!("SteamCMD not found in resources, at {:?}, or in PATH", local_path))
+        // Also try common system paths directly (for Linux/Unix)
+        #[cfg(unix)]
+        {
+            let system_paths = vec![
+                PathBuf::from("/usr/bin/steamcmd"),
+                PathBuf::from("/usr/local/bin/steamcmd"),
+                PathBuf::from("/bin/steamcmd"),
+            ];
+            for path in system_paths {
+                if path.exists() && path.is_file() {
+                    eprintln!("[Downloader] Using SteamCMD executable from system paths: {:?}", path);
+                    return Ok(path);
+                }
+            }
+        }
+
+        // Priority 2: Try to find in application resources (bundled installation)
+        if let Some(resource_path) = Self::find_steamcmd_from_resources_static(steamcmd_path).await? {
+            if resource_path.exists() && resource_path.is_file() {
+                eprintln!("[Downloader] Using SteamCMD executable from resources: {:?}", resource_path);
+                return Ok(resource_path);
+            }
+        }
+
+        // Priority 3: Try local path (fallback)
+        let local_path = steamcmd_path.join(steamcmd_exe);
+        if local_path.exists() && local_path.is_file() {
+            eprintln!("[Downloader] Using SteamCMD executable from local path: {:?}", local_path);
+            return Ok(local_path);
+        }
+
+        Err(format!("SteamCMD not found in PATH, resources, or at {:?}", local_path))
     }
     
     /// Static version of find_steamcmd_from_resources for use in spawned tasks
