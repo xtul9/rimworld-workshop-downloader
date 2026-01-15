@@ -96,7 +96,7 @@ jobs:
           docker run --rm -v $(pwd):/workspace -w /workspace \
             archlinux:latest \
             bash -c "
-              pacman -Syu --noconfirm pacman-contrib git
+              pacman -Syu --noconfirm pacman-contrib git fakeroot debugedit
               # Create builder user with UID/GID matching host user (for file permissions)
               useradd -m -u 1000 builder
               # Give builder user ownership of workspace
