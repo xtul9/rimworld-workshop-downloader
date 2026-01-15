@@ -686,12 +686,23 @@ impl Downloader {
         }
 
         // Start SteamCMD process
-        let mut steamcmd_process = Command::new(&steamcmd_executable)
-            .arg("+runscript")
+        let mut cmd = Command::new(&steamcmd_executable);
+        cmd.arg("+runscript")
             .arg(&script_path_absolute)
             .current_dir(&steamcmd_path_absolute)
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        
+        // Hide console window on Windows to prevent terminal window from appearing
+        #[cfg(windows)]
+        {
+            // CREATE_NO_WINDOW flag (0x08000000) prevents console window from showing
+            // see: https://learn.microsoft.com/en-us/windows/win32/procthread/process-creation-flags
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x08000000);
+        }
+        
+        let mut steamcmd_process = cmd
             .spawn()
             .map_err(|e| format!("Failed to spawn SteamCMD: {}", e))?;
         
