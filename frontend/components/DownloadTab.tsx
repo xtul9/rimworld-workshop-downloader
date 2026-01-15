@@ -498,13 +498,19 @@ export default function DownloadTab() {
         setProgress(i + 1);
       }
 
-      // Only clear mod inputs if all mods were successfully downloaded
-      if (successfullyDownloaded > 0 && failedDownloads === 0) {
+      // Check if any mods were cancelled during the download process
+      const hasCancelledMods = modInputs.some(m => m.status === "cancelled");
+
+      // Only clear mod inputs if all mods were successfully downloaded (no failures or cancellations)
+      if (successfullyDownloaded > 0 && failedDownloads === 0 && !hasCancelledMods) {
         setDownloadStatus("Download completed");
         // Clear mod inputs after successful download
         setModInputs([{ id: String(Date.now()), value: "", status: "empty" }]);
-      } else if (successfullyDownloaded > 0) {
+      } else if (successfullyDownloaded > 0 && !hasCancelledMods) {
         setDownloadStatus(`Download completed with ${failedDownloads} error(s)`);
+      } else if (hasCancelledMods) {
+        // If any mods were cancelled, show cancelled status regardless of successful downloads
+        setDownloadStatus("Download cancelled");
       } else if (failedDownloads > 0) {
         setDownloadStatus(`Download failed: ${failedDownloads} error(s)`);
       } else {
