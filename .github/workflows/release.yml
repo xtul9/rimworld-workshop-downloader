@@ -169,7 +169,7 @@ jobs:
           
           # Create release body with header and changelog section
           {
-            echo "##v$VERSION"
+            echo "## v$VERSION"
             echo ""
             echo "### Installation"
             echo "- **Arch Linux**: Install the \`.pkg.tar.zst\` package with \`sudo pacman -U *.pkg.tar.zst\`"
