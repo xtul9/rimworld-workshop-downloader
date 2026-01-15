@@ -21,34 +21,18 @@ depends=(
     'libayatana-appindicator'
     'steamcmd'
 )
-makedepends=('curl')
-# Use local DEB if available (for local development), otherwise download from GitHub releases
-_debpath="backend/target/release/bundle/deb"
-_debfile="Rimworld Workshop Downloader_${pkgver}_amd64.deb"
-_fulldebpath="$_debpath/$_debfile"
+makedepends=('curl' 'pacman-contrib')
 
-if [ -f "$_fulldebpath" ]; then
-    cp "$_fulldebpath" .
-    source=("$_debfile")
-    sha256sums=('SKIP')
-    noextract=("$_debfile")
-else
-    # Github releases change filenames (in this case, spaces to dots)
-    _remotedebfile="Rimworld.Workshop.Downloader_${pkgver}_amd64.deb"
-    _downloadedfile="$pkgname-$pkgver.tar.gz"
-    source=("$_downloadedfile::https://github.com/xtul9/rimworld-workshop-downloader/releases/download/v$pkgver/$_remotedebfile")
-    sha256sums=('SKIP')
-    noextract=("$_downloadedfile")
-fi
+# Download pre-built Arch package from GitHub releases
+_pkgfile="$pkgname-$pkgver-$pkgrel-x86_64.pkg.tar.zst"
+source=("$_pkgfile::https://github.com/xtul9/rimworld-workshop-downloader/releases/download/v$pkgver/$_pkgfile")
+sha256sums=('SKIP')
+noextract=("$_pkgfile")
 
 prepare() {
-    # Extract the deb package
-    if [ -f "$pkgname-$pkgver.tar.gz" ]; then
-        ar x "$pkgname-$pkgver.tar.gz"
-    else
-        ar x "$_debfile"
-    fi
-    tar -xf data.tar.gz
+    # Extract the Arch package
+    # Use bsdtar (from pacman-contrib) which natively supports .pkg.tar.zst
+    bsdtar -xf "$_pkgfile"
 }
 
 package() {
@@ -103,7 +87,10 @@ package() {
     done
 
     # Install license if available
-    if [ -f "$srcdir/usr/share/doc/rimworld-workshop-downloader/copyright" ]; then
+    if [ -f "$srcdir/usr/share/licenses/$pkgname/LICENSE" ]; then
+        install -Dm644 "$srcdir/usr/share/licenses/$pkgname/LICENSE" \
+            "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    elif [ -f "$srcdir/usr/share/doc/rimworld-workshop-downloader/copyright" ]; then
         install -Dm644 "$srcdir/usr/share/doc/rimworld-workshop-downloader/copyright" \
             "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
     fi
