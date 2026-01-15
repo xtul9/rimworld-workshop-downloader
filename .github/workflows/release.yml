@@ -102,10 +102,11 @@ jobs:
               # Give builder user ownership of workspace
               chown -R builder:builder /workspace
               # Switch to builder user and run makepkg
+              # Use --nodeps to skip dependency checks (deps are only needed at install time, not build time)
               su builder -c '
                 cd /workspace
                 makepkg --printsrcinfo > .SRCINFO
-                makepkg -f --noconfirm
+                makepkg -f --noconfirm --nodeps
                 ls -la *.pkg.tar.zst
               '
             "
