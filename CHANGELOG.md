@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.6.0
+
+### Added
+- Ability to cancel mod updates and downloads at any time using cancel buttons in the interface
+- The app now detects corrupted mods and warns you before installation
+- When a corrupted mod is detected, you can choose to overwrite it or install it with a different name
+- Cancel buttons are now available in all tabs (Query, Installed Mods, and Download)
+- Arch Linux users can now install the app using the `.pkg.tar.zst` package (via AUR too, probably soon)
+
+### Changed
+- The app now uses system's SteamCMD installation when available, which is better on systems such as Arch or NixOS
+- Improved handling of mod name conflicts - the app generates better unique names automatically
+
+### Fixed
+- Fixed SteamCMD console window opening on Windows
+- Some improvements to real-time updates in UI as mods are being updated or downloaded
+
 ## v0.5.1
 
 ### Added
