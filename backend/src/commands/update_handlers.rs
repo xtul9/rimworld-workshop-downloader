@@ -149,6 +149,12 @@ pub async fn update_mods(
             // Mark all mods as cancelled, but preserve any that completed before cancellation
             let mut cancelled_mods = Vec::new();
             for (mod_id, result) in results {
+                // Skip entries with empty mod_id (indicates task panic where we lost mod_id)
+                if mod_id.is_empty() {
+                    eprintln!("[UPDATE_MODS] Skipping panicked task result - mod_id unknown");
+                    continue;
+                }
+
                 match result {
                     Ok(_path) => {
                         // Mod was successfully updated before cancellation
@@ -362,6 +368,12 @@ pub async fn update_mods(
         
         let mut cancelled_mods = Vec::new();
         for (mod_id, result) in results {
+            // Skip entries with empty mod_id (indicates task panic where we lost mod_id)
+            if mod_id.is_empty() {
+                eprintln!("[UPDATE_MODS] Skipping panicked task result - mod_id unknown");
+                continue;
+            }
+
             match result {
                 Ok(_path) => {
                     // Mod was successfully updated before cancellation
@@ -411,6 +423,12 @@ pub async fn update_mods(
     let mut updated_mods = Vec::new();
     
     for (mod_id, result) in results {
+        // Skip entries with empty mod_id (indicates task panic where we lost mod_id)
+        if mod_id.is_empty() {
+            eprintln!("[UPDATE_MODS] Skipping panicked task result - mod_id unknown");
+            continue;
+        }
+
         match result {
             Ok(_path) => {
                 // Find the original mod to return
