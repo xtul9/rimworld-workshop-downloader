@@ -86,12 +86,35 @@ jobs:
           projectPath: backend
           args: --bundles ${{ matrix.bundle-targets }}
 
+      - name: Build Arch Linux package
+        if: matrix.platform == 'linux'
+        run: |
+          # Build Arch package using Docker
+          # makepkg refuses to run as root, so we create a builder user
+          docker run --rm -v $(pwd):/workspace -w /workspace \
+            archlinux:latest \
+            bash -c "
+              pacman -Syu --noconfirm pacman-contrib git
+              # Create builder user with UID/GID matching host user (for file permissions)
+              useradd -m -u 1000 builder
+              # Give builder user ownership of workspace
+              chown -R builder:builder /workspace
+              # Switch to builder user and run makepkg
+              su builder -c '
+                cd /workspace
+                makepkg --printsrcinfo > .SRCINFO
+                makepkg -f --noconfirm
+                ls -la *.pkg.tar.zst
+              '
+            "
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.platform }}-artifacts
           path: |
             backend/target/release/bundle/**
+            *.pkg.tar.zst
           retention-days: 7
           if-no-files-found: error
 
