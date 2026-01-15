@@ -30,13 +30,15 @@ if [ -f "$_fulldebpath" ]; then
     cp "$_fulldebpath" .
     source=("$_debfile")
     sha256sums=('SKIP')
+    noextract=("$_debfile")
 else
     # Github releases change filenames (in this case, spaces to dots)
     _remotedebfile="Rimworld.Workshop.Downloader_${pkgver}_amd64.deb"
-    source=("$pkgname-$pkgver.tar.gz::https://github.com/xtul9/rimworld-workshop-downloader/releases/download/v$pkgver/$_remotedebfile")
+    _downloadedfile="$pkgname-$pkgver.tar.gz"
+    source=("$_downloadedfile::https://github.com/xtul9/rimworld-workshop-downloader/releases/download/v$pkgver/$_remotedebfile")
     sha256sums=('SKIP')
+    noextract=("$_downloadedfile")
 fi
-noextract=("$_debfile")
 
 prepare() {
     # Extract the deb package
