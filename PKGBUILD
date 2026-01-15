@@ -6,6 +6,7 @@ pkgdesc="A tool to manage Rimworld mod updates from Steam Workshop"
 arch=('x86_64')
 url="https://github.com/xtul9/rimworld-workshop-downloader"
 license=('MIT')
+options=('!debug')
 depends=(
     'webkit2gtk'
     'gtk3'
