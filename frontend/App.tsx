@@ -17,6 +17,7 @@ import MessageModal from "./components/MessageModal";
 import CorruptedModConflictModal from "./components/CorruptedModConflictModal";
 import ContextMenu from "./components/ContextMenu";
 import AccessErrorBanner from "./components/AccessErrorBanner";
+import AppMenu from "./components/AppMenu";
 import { Theme } from "./utils/settingsStorage";
 import "./App.css";
 
@@ -75,33 +76,36 @@ function AppContent() {
     <div className="app-container">
       <AccessErrorBanner />
       <div className="app-tabs">
-        <button
-          className={`tab-button ${activeTab === "query" ? "active" : ""} ${hasActiveError ? "disabled" : ""}`}
-          onClick={() => !hasActiveError && setActiveTab("query")}
-          disabled={hasActiveError}
-        >
-          Query & Update
-        </button>
-        <button
-          className={`tab-button ${activeTab === "installed" ? "active" : ""} ${hasActiveError ? "disabled" : ""}`}
-          onClick={() => !hasActiveError && setActiveTab("installed")}
-          disabled={hasActiveError}
-        >
-          Installed Mods
-        </button>
-        <button
-          className={`tab-button ${activeTab === "download" ? "active" : ""} ${hasActiveError ? "disabled" : ""}`}
-          onClick={() => !hasActiveError && setActiveTab("download")}
-          disabled={hasActiveError}
-        >
-          Download
-        </button>
-        <button
-          className={`tab-button ${activeTab === "settings" ? "active" : ""}`}
-          onClick={() => setActiveTab("settings")}
-        >
-          Settings
-        </button>
+        <div className="app-tabs-left">
+          <button
+            className={`tab-button ${activeTab === "query" ? "active" : ""} ${hasActiveError ? "disabled" : ""}`}
+            onClick={() => !hasActiveError && setActiveTab("query")}
+            disabled={hasActiveError}
+          >
+            Query & Update
+          </button>
+          <button
+            className={`tab-button ${activeTab === "installed" ? "active" : ""} ${hasActiveError ? "disabled" : ""}`}
+            onClick={() => !hasActiveError && setActiveTab("installed")}
+            disabled={hasActiveError}
+          >
+            Installed Mods
+          </button>
+          <button
+            className={`tab-button ${activeTab === "download" ? "active" : ""} ${hasActiveError ? "disabled" : ""}`}
+            onClick={() => !hasActiveError && setActiveTab("download")}
+            disabled={hasActiveError}
+          >
+            Download
+          </button>
+          <button
+            className={`tab-button ${activeTab === "settings" ? "active" : ""}`}
+            onClick={() => setActiveTab("settings")}
+          >
+            Settings
+          </button>
+        </div>
+        <AppMenu />
       </div>
 
       <main className={`app-content ${hasActiveError ? "blocked" : ""}`}>

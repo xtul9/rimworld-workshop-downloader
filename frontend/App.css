@@ -48,8 +48,14 @@ body {
 
 .app-tabs {
   display: flex;
+  justify-content: space-between;
+  align-items: center;
   background-color: #34495e;
   border-bottom: 2px solid #2c3e50;
+}
+
+.app-tabs-left {
+  display: flex;
 }
 
 .tab-button {

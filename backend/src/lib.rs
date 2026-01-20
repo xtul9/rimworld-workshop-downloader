@@ -20,6 +20,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::default().build())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .invoke_handler(tauri::generate_handler![
             commands::query_mods,
             commands::list_installed_mods,
@@ -45,6 +46,7 @@ pub fn run() {
             commands::continue_download_with_decision,
             commands::start_mod_watcher,
             commands::stop_mod_watcher,
+            commands::export_mods_to_clipboard,
         ])
         .setup(|_app| {
             Ok(())
