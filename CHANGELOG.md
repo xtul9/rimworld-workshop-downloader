@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.6.1
+
+### Added
+- A dropdown menu at the top right corner of RWD window
+- An option within aforementioned menu to view app's version
+- Ability to export the mod list to clipboard. The output is compatible with RimSort's output and thus can be used with tools such as Judge My List (https://jumli.sysrqmagician.dev/)
+
 ## v0.6.0
 
 ### Added

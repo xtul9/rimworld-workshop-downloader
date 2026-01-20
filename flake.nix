@@ -49,7 +49,7 @@
         # Build the application
         buildApp = pkgs.stdenv.mkDerivation {
           pname = "rimworld-workshop-downloader";
-          version = "0.6.0";
+          version = "0.6.1";
           src = ./.;
 
           nativeBuildInputs = with pkgs; [
